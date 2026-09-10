@@ -1,0 +1,68 @@
+# The rescue composition: a host plane that boots WITHOUT the profile that failed.
+#
+# The launcher composes this list on top of the `@deepseek-ai/dsh-base` bundle
+# patch, then appends one row for the rescue runner. Nothing here reads the
+# profile's own `cordis.patch.yml`, the harness-home patch, or the profile's
+# bundle list, so a broken composition cannot stop the rescue from starting.
+#
+# What this layer adds over the base host:
+#   * the creation-mode toolset (`cordis_*`) and the host runner it needs;
+#   * the composition-authoring skills, read from the shipped preset install so
+#     they stay current with the deployment;
+#   * a rescue persona that states the job, the planes, and the boundaries;
+#   * the permissions a repair actually needs, stated explicitly rather than
+#     inherited from an environment variable that a broken deployment may set.
+
+- id: system-prompt
+  config:
+    persona: !!js process.env.DSH_RESCUE_PERSONA
+
+# A repair edits paths outside any workspace: the harness home, the profile
+# directory, and the harness checkout. `workspace-write` would deny all of them,
+# and an `ask` approval policy fails closed with no answerer attached to a
+# terminal rescue, so both are stated here instead of inherited. Override either
+# with `--permission-mode` / `--workspace`; the human sees every command in the
+# transcript and the durable session log.
+- id: sandbox-policy
+  config:
+    mode: !!js process.env.DSH_RESCUE_PERMISSION_MODE || 'danger-full-access'
+    workspaceRoot: !!js process.env.DSH_RESCUE_WORKSPACE || process.cwd()
+
+- id: approval
+  config:
+    policy: !!js process.env.DSH_RESCUE_APPROVAL_POLICY || 'never'
+
+# A rescue must not emit telemetry about a deployment it is diagnosing.
+- id: session-telemetry-otel
+  config:
+    mode: DISABLED
+
+# Durable state follows the deployment by default; `--state-root` redirects it
+# so a rescue can run against a sandboxed or read-only harness home.
+- id: session-persistence-jsonl
+  config:
+    root: !!js process.env.DSH_RESCUE_SESSIONS_ROOT || dshHomePath('sessions')
+
+- id: storage-json
+  config:
+    root: !!js process.env.DSH_RESCUE_STORAGES_ROOT || dshHomePath('storages')
+
+- id: attachment-local
+  config:
+    dshHome: !!js process.env.DSH_RESCUE_ATTACHMENTS_HOME
+
+# The composition-authoring skills the rescue needs are the ones the shipped
+# `cordis` preset carries; pointing at that install keeps them in sync with the
+# deployment instead of forking a copy that drifts.
+- id: skill-filesystem
+  config:
+    customSkillDirs: !!js process.env.DSH_RESCUE_SKILL_DIRS.split(';').filter(Boolean)
+
+- insert:
+    # `tool-cordis` injects `dynamicCordisRunner` and `cordisInspect`, which this
+    # host row provides. Both are host-plane: one registry per process.
+    - id: cordis-host-runner
+      name: '@deepseek-ai/dsh-cordis-host-runner'
+
+    - id: tool-cordis
+      name: '@deepseek-ai/dsh-tool-cordis'

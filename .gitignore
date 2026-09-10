@@ -1,0 +1,7 @@
+﻿# Build and install artefacts — never committed.
+node_modules/
+*.tgz
+
+# Rescue run state, when the CLI is exercised from inside this checkout.
+.rescue/
+

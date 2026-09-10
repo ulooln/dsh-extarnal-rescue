@@ -1,0 +1,12 @@
+# The dsh-rescue bundle patch: mount the in-process rescue tools in a healthy
+# profile. The standalone launcher (`lib/cli.js`) does not need this row — it is
+# exactly what you use when this profile cannot mount at all.
+
+- insert:
+    - id: dsh-rescue
+      name: '@dsh-external/dsh-rescue'
+      config:
+        profile: web
+        # The launcher shim is written under $DSH_HOME/rescue so the command is
+        # one short word away when the web surface will not come back.
+        installShim: true

@@ -1,0 +1,4 @@
+﻿# One line ending everywhere: the package ships a bash build script and the
+# rescue CLI reads its own YAML, so a Windows checkout must not rewrite them.
+* text=auto eol=lf
+
