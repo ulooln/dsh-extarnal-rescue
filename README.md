@@ -1,6 +1,21 @@
 # @dsh-external/dsh-rescue
 
+**版本 0.1.0** · 2026-09-10 · 许可 BSD-3-Clause · 状态：可用（Windows + DSH `0.1.3-alpha.1` 端到端实测通过）· 变更见 [CHANGELOG.md](CHANGELOG.md)
+
 DSH 本体自毁救援：**当 dsh 起不来、Web UI 也进不去的时候**，用一条命令拉起一个独立的、具备「创造模式」工具面的极简 agent，让它诊断并修复本体。
+
+---
+
+## ⚠️ 注意事项（先读这一节）
+
+1. **救援 agent 默认以 `danger-full-access` 运行**，能写任何路径。这是有意的：修复目标（`$DSH_HOME/profiles/...`、harness checkout）本来就在任何 workspace 之外，而终端救援没有审批应答者，`ask` 策略会 fail-closed 到一个字节都写不进去。要收紧：`--permission-mode workspace-write --workspace <dir>`，或 `read-only` 只诊断。人能看到 agent 跑的每条命令（transcript + 会话日志）。
+2. **`fix` / `supervise` 会改动你的 `cordis.patch.yml`**（只追加禁用补丁，写前备份为 `<文件>.rescue-bak-<时间戳>`）。它只动 profile 自己的 patch 层，不碰 bundle、不删文件、不改 harness 源码；**复验失败会整体回滚**。
+3. **只覆盖启动窗口内的失败**（默认 25s，`--timeout` 可调）。起来之后才崩不在职责内。
+4. **需要一个可用的部署平面**：某个 `node_modules` 里仍有 `@deepseek-ai/cordis`、`cordis-plugin-include`、`dsh-app-boot`、`dsh-base`。连这些都丢了就只剩静态诊断（退出码 2）。
+5. **`fix` 目前只自动处理一类故障**——插入的行其包解析不了。重复 entry id、悬空 junction、bundle 装不上需要人决定保哪个/装什么，只报告不猜。
+6. **救援树只保证与 DSH `0.1.3-alpha.1` 同版本实测**；它按 `dsh-base` 的行 id 覆盖配置，跨大版本升级后行 id 可能变，届时以 `dsh-rescue doctor` 的报错为准。
+7. **别把 `--state-root` 指到会被清理的目录**：救援会话、incident 现场、transcript 都在里面。
+8. 两处环境限制（详见文末「已知限制」）：宿主进程若跑在限制命名管道的沙箱里，agent 的 `pwsh`/`bash` 工具起不来；若宿主的文件沙箱连「覆盖已存在文件」都拒绝，agent 改不动 profile 文件——这两条路径下用 `dsh-rescue fix`，或让 agent 把精确改法报给人工执行。
 
 ---
 
