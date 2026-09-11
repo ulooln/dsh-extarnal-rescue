@@ -64,6 +64,8 @@ export interface UnresolvedInsert {
     /** Which composition layer the insert came from. */
     role: PatchLayerInfo['role'];
 }
+/** Why one bundle is unusable, if it is. */
+export type BundleCode = 'unresolved' | 'manifest-invalid' | 'no-patch' | 'patch-missing';
 /** One bundle listed in a profile manifest, resolved or not. */
 export interface BundleInfo {
     name: string;
@@ -72,6 +74,8 @@ export interface BundleInfo {
     dir?: string;
     /** Patch file the bundle contributes, when declared. */
     patch?: string;
+    /** Which check failed, when {@link BundleInfo.resolved} is false. */
+    code?: BundleCode;
     error?: string;
 }
 /** One link dependency of a profile manifest. */
@@ -113,6 +117,56 @@ export interface ProfileInfo {
     /** Whether `patchReload` is `live`, so a bad edit takes effect without a restart. */
     patchReload?: string;
 }
+/** Why a boot run is believed to have failed, from the signatures in its output. */
+export type CrashReason = 'session-corrupt' | 'bundle-check' | 'patch-tree' | 'port-bind' | 'settings' | 'unknown';
+/**
+ * The last boot's outcome, written by whoever ran it.
+ *
+ * A crash cannot write its own record, so the handshake runs the other way: a
+ * run marks itself unfinished before it knows it will survive, and only marks
+ * itself finished once it reaches its ready state. The next run therefore infers
+ * the crash, and {@link BootState.lastGoodAt} survives it as the rollback anchor.
+ */
+export interface BootState {
+    /** Whether the run that wrote this record reached its ready state. */
+    ok: boolean;
+    /** ISO timestamp this record was opened. */
+    startedAt?: string;
+    /** ISO timestamp readiness was committed. */
+    okAt?: string;
+    /** ISO timestamp of the most recent run that did reach readiness. */
+    lastGoodAt?: string | null;
+    /** Process id of the run that opened the record. */
+    pid?: number;
+    /**
+     * Whether the run that opened this record exited on purpose before reaching
+     * readiness. Only an interrupt or termination signal sets this: a run whose
+     * tree was torn down for any other reason never reached readiness, which is
+     * the signature of a failed load rather than of a deliberate stop.
+     */
+    cleanExit?: boolean;
+    /** Whether the tree was unloaded before readiness without a signal asking for it. */
+    tornDown?: boolean;
+    /** Signatures read out of the failing run's captured output. */
+    crashReason?: CrashReason | null;
+    /** Which captured artifact the signatures came from. */
+    crashEvidence?: string;
+    /** Version of the rescue package that wrote the record. */
+    version?: string;
+}
+/** The boot history as the doctor reports it. */
+export interface BootReport {
+    /** The record left by the previous run, absent on a first-ever run. */
+    state?: BootState;
+    /** Whether the previous run failed to reach readiness without exiting on purpose. */
+    crashed: boolean;
+    /** Signatures classified from the failing run's output. */
+    reason?: CrashReason;
+    /** The concrete next step for {@link BootReport.reason}. */
+    advice?: string;
+    /** Where the classified output came from. */
+    evidence?: string;
+}
 /** The captured output of one failed boot attempt. */
 export interface Incident {
     /** ISO timestamp of the attempt. */
@@ -151,6 +205,8 @@ export interface DoctorReport {
     profiles: ProfileInfo[];
     /** The most recent captured boot failure, when one exists. */
     incident?: Incident;
+    /** The previous run's outcome, inferred from the boot handshake. */
+    boot: BootReport;
     /** Resolved model route for the repair agent. */
     model?: {
         provider: string;

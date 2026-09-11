@@ -55,6 +55,21 @@ export function renderReport(report: DoctorReport): string {
     if (profile.disabledRows.length > 0) lines.push(`    disabled rows ${profile.disabledRows.join(', ')}`)
   }
 
+  lines.push('')
+  lines.push('BOOT HISTORY')
+  if (report.boot.state === undefined) {
+    lines.push('  no handshake record yet (mount the dsh-rescue bundle in the profile to start recording boot outcomes)')
+  } else if (report.boot.crashed) {
+    lines.push('  PREVIOUS RUN: did not reach ready')
+    lines.push(`  started     ${report.boot.state.startedAt ?? 'unknown'}${report.boot.state.pid === undefined ? '' : ` (pid ${String(report.boot.state.pid)})`}`)
+    lines.push(`  last good   ${report.boot.state.lastGoodAt ?? 'none recorded'}`)
+    lines.push(`  classified  ${report.boot.reason ?? 'unknown'}`)
+    if (report.boot.advice !== undefined) lines.push(`  next step   ${report.boot.advice}`)
+  } else {
+    lines.push(`  previous run: reached ready at ${report.boot.state.okAt ?? 'unknown'}`)
+    lines.push(`  last good   ${report.boot.state.lastGoodAt ?? 'unknown'}`)
+  }
+
   if (report.incident !== undefined) {
     const incident = report.incident
     lines.push('')

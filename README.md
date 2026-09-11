@@ -1,6 +1,6 @@
 # @dsh-external/dsh-rescue
 
-**版本 0.1.0** · 2026-09-10 · 许可 BSD-3-Clause · 状态：可用（Windows + DSH `0.1.3-alpha.1` 端到端实测通过）· 变更见 [CHANGELOG.md](CHANGELOG.md)
+**版本 0.2.0** · 2026-09-10 · 许可 BSD-3-Clause · 状态：可用（Windows + DSH `0.1.3-alpha.1` 端到端实测通过）· 变更见 [CHANGELOG.md](CHANGELOG.md)
 
 DSH 本体自毁救援：**当 dsh 起不来、Web UI 也进不去的时候**，用一条命令拉起一个独立的、具备「创造模式」工具面的极简 agent，让它诊断并修复本体。
 
@@ -9,10 +9,10 @@ DSH 本体自毁救援：**当 dsh 起不来、Web UI 也进不去的时候**，
 ## ⚠️ 注意事项（先读这一节）
 
 1. **救援 agent 默认以 `danger-full-access` 运行**，能写任何路径。这是有意的：修复目标（`$DSH_HOME/profiles/...`、harness checkout）本来就在任何 workspace 之外，而终端救援没有审批应答者，`ask` 策略会 fail-closed 到一个字节都写不进去。要收紧：`--permission-mode workspace-write --workspace <dir>`，或 `read-only` 只诊断。人能看到 agent 跑的每条命令（transcript + 会话日志）。
-2. **`fix` / `supervise` 会改动你的 `cordis.patch.yml`**（只追加禁用补丁，写前备份为 `<文件>.rescue-bak-<时间戳>`）。它只动 profile 自己的 patch 层，不碰 bundle、不删文件、不改 harness 源码；**复验失败会整体回滚**。
-3. **只覆盖启动窗口内的失败**（默认 25s，`--timeout` 可调）。起来之后才崩不在职责内。
+2. **`fix` / `supervise` 会改动你的 profile 文件**（`cordis.patch.yml` 与 `package.json`），写前一律备份为 `<文件>.rescue-bak-<时间戳>`。它只做两件事：在 profile 自己的 patch 层追加禁用补丁，以及从 `dsh.profile.bundles` 里移除启动器装载不了的 bundle。不碰 bundle 包本身、不删文件、不改 harness 源码；**复验失败会整体回滚**。移除 bundle 只是移出列表，包还在 `node_modules` 里、`dependencies` 条目也保留，装回来是一行的事。
+3. **只覆盖启动窗口内的失败**（默认 25s，`--timeout` 可调）。起来之后才崩不在职责内；但**崩溃归因不依赖这个窗口**（见下）。
 4. **需要一个可用的部署平面**：某个 `node_modules` 里仍有 `@deepseek-ai/cordis`、`cordis-plugin-include`、`dsh-app-boot`、`dsh-base`。连这些都丢了就只剩静态诊断（退出码 2）。
-5. **`fix` 目前只自动处理一类故障**——插入的行其包解析不了。重复 entry id、悬空 junction、bundle 装不上需要人决定保哪个/装什么，只报告不猜。
+5. **`fix` 只自动处理两类故障**——插入的行其包解析不了、bundle 装载不了。重复 entry id、悬空 junction、损坏的会话日志需要人决定，只报告不猜。
 6. **救援树只保证与 DSH `0.1.3-alpha.1` 同版本实测**；它按 `dsh-base` 的行 id 覆盖配置，跨大版本升级后行 id 可能变，届时以 `dsh-rescue doctor` 的报错为准。
 7. **别把 `--state-root` 指到会被清理的目录**：救援会话、incident 现场、transcript 都在里面。
 8. 两处环境限制（详见文末「已知限制」）：宿主进程若跑在限制命名管道的沙箱里，agent 的 `pwsh`/`bash` 工具起不来；若宿主的文件沙箱连「覆盖已存在文件」都拒绝，agent 改不动 profile 文件——这两条路径下用 `dsh-rescue fix`，或让 agent 把精确改法报给人工执行。
@@ -89,12 +89,28 @@ dsh-rescue repair                 # 交互 REPL：rescue>
 `supervise` 的三段式，按代价从低到高：
 
 1. **捕获**：真启一次目标 profile（默认 25s 启动窗口）。窗口内还活着 = 起来了，直接退出；退出码非 0 = 失败，把命令、cwd、退出码、耗时、**完整 stdout+stderr**、识别出的诊断行，连同失败那一刻的配置文件快照，写进 `incidents/<时间戳>/`。
-2. **机械修复**（不调模型）：目前只有一类故障有唯一最小修法——**插入的行其包解析不了**。做法是在 profile 自己的 `cordis.patch.yml` 末尾追加一条禁用补丁（写之前先备份，写之前先用 Loader 自己的 YAML 方言解析一遍新内容，解析不过就拒写）。不动 bundle、不删文件、不改 harness 源码。
+2. **机械修复**（不调模型）：只有两类故障有唯一最小修法，两类都是启动器本身逼出来的：
+   - **插入的行其包解析不了** —— 在 profile 自己的 `cordis.patch.yml` 末尾追加一条禁用补丁。不删任何内容，无论这条 insert 来自 profile 还是它下面的 bundle 都有效。
+   - **bundle 装载不了** —— bundle 层**没有 disable 开关**，所以唯一的最小修法是把它的名字从 `dsh.profile.bundles` 里移除。包留在 `node_modules`、`dependencies` 条目也留着，装回来是一行的事。判据与启动器一致：包能按 Node 的真实解析搜到、manifest 里有 `dsh.bundle.patch`、那个文件确实存在——三者任一不满足，整棵树都装载失败（诊断里分别报 `bundle-unresolved` / `bundle-no-patch` / `bundle-patch-missing`）。
+   - **绝不删掉挂载本插件自己的那个 bundle**：否则下一次崩溃就没有工具可用了。
+   - 每次写入前都先证明新内容可解析（patch 层或 manifest 解析不了会让整棵树拒绝装载），并备份为 `<文件>.rescue-bak-<时间戳>`。
    - **复验失败就整体回滚**：自动写入者证明不了自己有用时，必须把现场还原成它接手时的样子，让 agent 面对原始状态而不是一堆被否掉的改动。
-   - 其余类别（重复 id、悬空 link、bundle 装不上）需要人来决定保哪个、装什么，只报告不猜。
+   - 其余类别（重复 id、悬空 link、损坏会话）需要人决定保哪个、装什么，只报告不猜。
 3. **agent 兜底**：机械修复没救回来，才把「诊断 + 失败原文 + 机械修复已尝试并回滚」交给救援 agent。
 
 `supervise` 全程退出码 `0` 的含义是：**profile 最终起来了**，无论靠机械修复还是靠 agent。
+
+## 崩溃归因：没人看着也能知道上次崩了
+
+`supervise` 要求有人先在终端敲它。**boot 握手补上了这个缺口**：进程自己死掉时无法写遗言，所以握手反着来——
+
+- 进程内插件挂载时先把记录打开为「未完成」（`$DSH_HOME/rescue/boot-state.json`，`ok: false`）；
+- 只有真正到达就绪状态才把它关成「已完成」。就绪信号优先取启动器自己的 `appReady`；没有该信号的界面回退到 30s 计时；
+- 于是**下一次挂载**（或 `dsh-rescue doctor`，它读同一个文件）就知道上一次没起来，`lastGoodAt` 作为「最后正常启动时间」锚点活了下来；
+- 卸载时若还没就绪，记录为 `cleanExit: true`——**被主动停掉的启动不算崩溃**，否则这个告警会被训练成噪音；
+- 崩溃当次就把日志签名分类**写进记录**（`session-corrupt` / `bundle-check` / `patch-tree` / `port-bind` / `settings` / `unknown`），免得日志滚动之后归因丢失。
+
+`doctor`、`rescue_doctor`、以及救援 agent 的 mission 都会带上这条历史与对应的处置建议。
 
 ## 救援 agent 拿到什么
 
@@ -150,16 +166,32 @@ $DSH_HOME/rescue/
 - 救援树依赖部署平面里的 `@deepseek-ai/*`。如果连 `@deepseek-ai/cordis` / `dsh-base` / `dsh-app-boot` 这些核心包本身都被删了，那就没有任何平面可用（退出码 2），只剩静态诊断。
 - 平台自带的 `pwsh`/`bash` 工具以管道方式起子进程；如果宿主进程本身跑在限制命名管道的沙箱里，这些工具会失败。此时 fs 类工具仍可用，agent 会按 mission 要求改用文件编辑 + 把精确改法报给人工。
 - 若宿主的文件沙箱连「覆盖已存在文件」都拒绝（Windows 上表现为 ACL 保留的原子替换报 EPERM），agent 改不动 profile 文件。这条路径下用 `dsh-rescue fix`（走 `node:fs` 直写，不经工具层）或让 agent 把改法报出来由人工执行。
-- `supervise` 只覆盖**启动窗口**内的失败（默认 25s）。起来之后才崩的情况不在它的职责内。
+- `supervise` 只覆盖**启动窗口**内的失败（默认 25s）。起来之后才崩的情况不在它的职责内；崩溃**归因**不受这个窗口限制（见「崩溃归因」）。
+- boot 握手只能报告「上一次启动没到就绪」。首次运行之前没有记录，插件本身没被挂载时也不会有记录。
 
 ## 机械修复的判定口径（踩过的坑）
 
 判断「某行解析不了」时，必须先把 subpath 剥掉：`@scope/pkg/sub` 和 `pkg/sub` 的包名分别是 `@scope/pkg` 和 `pkg`。早期版本拿整个 specifier 去找 `node_modules/<specifier>/package.json`，于是把 `@deepseek-ai/dsh-web-app/startup`、`@deepseek-ai/dsh-tool-subagent/model-selection-settings` 这类**子路径导出行**误判成坏行并自动禁用——那会把 Web 面直接干碎。现在这类误判被单测口径修正，并且复验失败会整体回滚，作为第二道防线。
 
-## 构建
+判断「某个 bundle 装载不了」时用的是**启动器自己的判据**，不是「目录存不存在」：按 Node 的真实包搜索（从 profile、harness home、部署平面依次为锚点）解析到包 + manifest 里声明了 `dsh.bundle.patch` + 那个文件确实存在。直接拼 `node_modules/<name>` 会把父级目录本可提供的包报成缺失，而这个检查存在的意义就是和刚失败的那次启动保持一致。
+
+## 构建与门禁
 
 ```sh
 DSH_CHECKOUT=/path/to/deepseek-harness bash scripts/build.sh
+npm test            # = check:version + check:size + smoke-test
 ```
 
 编译 `src/` → `lib/`，并把编译期依赖链接到 checkout。运行时不需要这些链接：救援路径在 `$DSH_HOME/rescue/runtime/` 里自建指向部署平面的解析链。
+
+三道门禁（`npm test` 一次跑完）：
+
+| 门禁 | 挡什么 |
+| --- | --- |
+| `npm run check:version` | 版本号四处不一致：`package.json`、`src/version.ts` 的 `PACKAGE_VERSION`、README 头部、CHANGELOG 最新段；以及四段版本号这类非 semver 写法 |
+| `npm run check:size` | 整体积或单文件超限（挡住误提交的构建树、附件） |
+| `npm run smoke-test` | 纯逻辑回归：崩溃分类、specifier→包名、命令行文法、boot 握手、bundle 判据与机械修复（含 dry-run 不写、rollback 还原、拒删救援自身） |
+
+`smoke-test` 跑在 `lib/` 上，所以先 `npm run build`。它不需要 DSH、不需要网络、不调模型，全部在临时目录里自建 fixture 并自清理。
+
+版本、commit、tag、Release、CHANGELOG 的格式规则见 [CONVENTIONS.md](CONVENTIONS.md)。

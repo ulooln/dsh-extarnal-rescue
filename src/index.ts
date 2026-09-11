@@ -11,15 +11,16 @@
  */
 
 import { spawn } from 'node:child_process'
-import { mkdirSync, openSync, writeFileSync } from 'node:fs'
+import { mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
-import { runDoctor, worstLevel } from './doctor.ts'
+import { classifyCrash, readBootState, readIncident, runDoctor, worstLevel, writeBootState } from './doctor.ts'
 import { renderJson, renderReport } from './report.ts'
 import { defaultStateRoot } from './launcher.ts'
 import { packageRootDir } from './plane.ts'
+import { PACKAGE_VERSION } from './version.ts'
 
 /** Stable Cordis plugin name. */
 export const name = '@dsh-external/dsh-rescue'
@@ -67,6 +68,116 @@ function writeShim(stateRoot: string): { files: string[]; error?: string } {
   }
 }
 
+/** How long to wait before assuming a surface with no readiness signal came up. */
+const READY_FALLBACK_MS = 30_000
+
+/**
+ * Record this run's boot outcome so the next run can attribute a crash.
+ *
+ * A dying process cannot write its own post-mortem, so the handshake runs the
+ * other way round: this mount opens the record as unfinished, and only readiness
+ * closes it as finished. The next mount — or `dsh-rescue doctor`, which reads the
+ * same file — therefore knows a previous run never came up, and `lastGoodAt`
+ * survives as the anchor for what changed since.
+ *
+ * Readiness is the launcher's own signal (`appReady`) when the surface provides
+ * one; the timer is the fallback for surfaces that never commit it, and a clean
+ * unload before readiness is recorded as such rather than as a crash.
+ * @param ctx - plugin context owning the handshake's lifetime.
+ * @param stateRoot - the rescue state root holding the record.
+ */
+function installBootHandshake(ctx: Context, stateRoot: string): void {
+  const previous = readBootState(stateRoot)
+  const crashed = previous !== undefined && previous.ok !== true && previous.cleanExit !== true
+  const startedAt = new Date().toISOString()
+  let settled = false
+  // Only an interrupt or termination signal means someone asked this run to stop.
+  // Every other teardown before readiness is a load that failed, and treating it
+  // as a clean stop would hide exactly the failure this record exists to catch.
+  let signalled = false
+  const onSignal = (): void => { signalled = true }
+  process.once('SIGINT', onSignal)
+  process.once('SIGTERM', onSignal)
+
+  const finish = (cleanExit: boolean): void => {
+    settled = true
+    writeBootState(stateRoot, {
+      ok: true,
+      startedAt,
+      okAt: new Date().toISOString(),
+      lastGoodAt: new Date().toISOString(),
+      pid: process.pid,
+      cleanExit,
+      crashReason: null,
+      version: PACKAGE_VERSION,
+    })
+  }
+
+  // Classify the previous failure now, while its captured output still exists:
+  // by the next boot the log may have rolled over, and the class is what tells
+  // the doctor and the repair agent which fix applies.
+  let crashReason = previous?.crashReason ?? null
+  let crashEvidence = previous?.crashEvidence
+  if (crashed && crashReason === null) {
+    const incident = readIncident(stateRoot)
+    const text = incident?.output ?? safeText(join(stateRoot, 'boot.log'))
+    if (text !== undefined) {
+      crashReason = classifyCrash(text)
+      crashEvidence = incident?.dir ?? join(stateRoot, 'boot.log')
+    }
+  }
+
+  writeBootState(stateRoot, {
+    ok: false,
+    startedAt,
+    lastGoodAt: previous?.lastGoodAt ?? null,
+    pid: process.pid,
+    crashReason,
+    ...crashEvidence === undefined ? {} : { crashEvidence },
+    version: PACKAGE_VERSION,
+  })
+  if (crashed) {
+    process.stderr.write(`dsh-rescue: the previous harness run did not reach ready (classified: ${String(crashReason ?? 'unknown')}); run rescue_doctor or \`dsh-rescue doctor\`\n`)
+  }
+
+  ctx.effect(() => {
+    const timer = setTimeout(() => { finish(false) }, READY_FALLBACK_MS)
+    const ready = ctx.get('appReady') as { onReady(listener: () => void): () => void } | undefined
+    const offReady = ready?.onReady(() => {
+      clearTimeout(timer)
+      finish(false)
+    })
+    return () => {
+      clearTimeout(timer)
+      offReady?.()
+      process.off('SIGINT', onSignal)
+      process.off('SIGTERM', onSignal)
+      // An unload after readiness is a clean shutdown. One before readiness is a
+      // boot that was stopped: a signal asked for it, or the tree was torn down
+      // under a load that never completed. Recording which is what keeps the next
+      // doctor from reporting a deliberate stop as a crash, and from hiding a
+      // failed load as a deliberate stop.
+      if (settled) {
+        writeBootState(stateRoot, { ...readBootState(stateRoot), ok: true, cleanExit: true, tornDown: false, version: PACKAGE_VERSION })
+        return
+      }
+      const current = readBootState(stateRoot)
+      writeBootState(stateRoot, {
+        ...current, ok: false, cleanExit: signalled, tornDown: !signalled, version: PACKAGE_VERSION,
+      })
+    }
+  }, '@dsh-external/dsh-rescue: boot handshake')
+}
+
+/** Read a file as text, or `undefined` when it is absent or unreadable. */
+function safeText(path: string): string | undefined {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Mount the rescue tools.
  * @param ctx - plugin context carrying the tool registry.
@@ -75,10 +186,11 @@ function writeShim(stateRoot: string): { files: string[]; error?: string } {
 export function apply(ctx: Context, config: Config): void {
   const stateRoot = config.stateRoot ?? defaultStateRoot()
   if (config.installShim) writeShim(stateRoot)
+  installBootHandshake(ctx, stateRoot)
 
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'rescue_doctor',
-    description: 'Diagnose this DeepSeek Harness deployment without booting it: profiles, bundles, links, patch layers, duplicate entry ids, model route, and the last captured boot failure.',
+    description: 'Diagnose this DeepSeek Harness deployment without booting it: profiles, bundles, links, patch layers, duplicate entry ids, model route, boot history (whether the previous run reached readiness and what killed it), and the last captured boot failure.',
     parameters: {
       json: { type: 'boolean', description: 'Return the raw report as JSON instead of the readable form.' },
     },

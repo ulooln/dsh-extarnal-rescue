@@ -1,10 +1,57 @@
 # 变更日志
 
-本文件记录每个版本的变更、**实测结论**与**当时已知的限制**。版本号遵循 `package.json` 的 `version`，对应 git tag `v<version>`。
+本文件记录每个版本的变更、**实测结论**与**当时已知的限制**。版本号遵循 `package.json` 的 `version`，对应 git tag `v<version>`。格式规则见 [CONVENTIONS.md](CONVENTIONS.md)。
 
 ---
 
-## v0.1.0 — 2026-09-10
+## [0.2.0] - 2026-09-10
+
+### 新增
+
+- **bundle 机械修复**：`fix` / `supervise` 现在也处理「某 bundle 装载不了」这一整类故障，做法是把它的名字从 `dsh.profile.bundles` 里移除。bundle 层**没有 disable 开关**，所以这是唯一的最小修法；包留在 `node_modules`、`dependencies` 条目也保留，装回来是一行的事。
+  - 判据按**启动器自己的口径**实现，而不是「目录存不存在」：以 profile、harness home、部署平面依次为锚点走 Node 的真实包搜索解析到包，再加 manifest 声明了 `dsh.bundle.patch`、那个文件确实存在。
+  - 诊断按失败原因分开报：`bundle-unresolved`（包解析不到）/ `bundle-no-patch`（装上了但不是 dsh bundle）/ `bundle-patch-missing`（patch 文件缺失），三者修复路径不同。
+  - **绝不删掉挂载本插件自己的那个 bundle**：否则下一次崩溃就没有工具可用了。
+- **崩溃归因（boot 握手）**：进程死掉时写不了遗言，所以握手反着来——插件挂载时把 `$DSH_HOME/rescue/boot-state.json` 打开为「未完成」，只有到达就绪状态才关成「已完成」；就绪信号优先取启动器自己的 `appReady`，没有该信号的界面回退到 30s 计时。于是**下一次挂载**、或 `dsh-rescue doctor`（读同一个文件），就知道上一次没起来，`lastGoodAt` 作为「最后正常启动时间」锚点保留。
+  - 卸载时若还没就绪，记为 `cleanExit: true`——被主动停掉的启动不算崩溃，否则这个告警会被训练成噪音。
+  - 崩溃当次就把日志签名分类写进记录（`session-corrupt` / `bundle-check` / `patch-tree` / `port-bind` / `settings` / `unknown`），免得日志滚动后归因丢失；每类都带一句对应的处置建议。
+  - `doctor` 输出、`rescue_doctor` 工具、以及救援 agent 的 mission 都会带上这条历史。
+- **工程门禁**：新增 `CONVENTIONS.md` 与三道门禁，`npm test` 一次跑完。
+  - `npm run check:version`：多处版本号（`package.json` / `src/version.ts` / README 头部 / CHANGELOG 最新段）必须一致，且拒绝四段非 semver 写法。
+  - `npm run check:size`：整体积与单文件上限。
+  - `node tools/smoke-test.mjs`：纯逻辑回归，不需要 DSH、不需要网络、不调模型，全部在临时目录里自建 fixture 并自清理。
+
+### 变更
+
+- 源码按可测试性拆分：命令行文法移入 `src/args.ts`，机械修复移入 `src/repair.ts`，版本字面量移入 `src/version.ts`；`src/cli.ts` 只留命令实现（535 行 → 273 行）。此前 `cli.ts` 在被 import 时会自行执行，其中的逻辑无法直接测试。
+
+### 实测结论
+
+| 验证项 | 结果 |
+| --- | --- |
+| bundle 判据 | ✅ fixture 里四种 bundle（正常 / 包缺失 / 无 `dsh.bundle.patch` / patch 文件缺失）分别被报成 resolved / `bundle-unresolved` / `bundle-no-patch` / `bundle-patch-missing` |
+| bundle 机械修复 | ✅ 一次移除三个装载不了的条目，保留正常 bundle 与本插件自身；manifest 已备份；rollback 还原全部五个条目 |
+| 拒删救援自身 | ✅ 当本插件自己是唯一坏 bundle 时，`fix` 一条都不改并说明原因 |
+| boot 握手 | ✅ 未完成记录 → `crashed: true` 且 `lastGoodAt` 保留；`cleanExit: true` → 不算崩溃；已完成记录 → 不算崩溃；无记录 → 首次运行 |
+
+### 已知限制
+
+- 需要一个可用的部署平面（`@deepseek-ai/cordis`、`cordis-plugin-include`、`dsh-app-boot`、`dsh-base` 至少在一个 `node_modules` 里）。全都没有时退出码 2，只剩静态诊断。
+- `fix` 只自动处理两类故障：插入的行解析不了、bundle 装载不了。重复 entry id、悬空 junction、损坏的会话日志需要人工决定，只报告。
+- `supervise` 只覆盖启动窗口（默认 25s）内的失败；崩溃**归因**不受此限制。
+- boot 握手只能报告「上一次启动没到就绪」。首次运行之前没有记录，插件本身没被挂载时也不会有记录。
+- 救援 agent 的 `pwsh`/`bash` 工具以管道方式起子进程：宿主进程若跑在限制命名管道的沙箱里会 `spawn EPERM`，此时 fs 类工具仍可用。
+- 若宿主的文件沙箱拒绝「覆盖已存在文件」（Windows 上表现为 ACL 保留的原子替换报 `EPERM`），agent 改不动 profile 文件；走 `dsh-rescue fix`（直写 `node:fs`）或由人工执行 agent 报出的精确改法。
+- 仅在 Windows + DSH `0.1.3-alpha.1` 上实测；`rescue.cordis.yml` 按 `dsh-base` 的行 id 覆盖，跨大版本升级后需以 `doctor` 报错为准。
+- 仓库未附 `LICENSE` 文件（`package.json` 声明 BSD-3-Clause，版权人未指定）。
+
+### 升级注意
+
+`fix` 现在可能改动 profile 的 `package.json`（移除装载不了的 bundle 条目）。升级后第一次运行建议先 `dsh-rescue fix --dry-run` 看会改什么；所有写入都有 `.rescue-bak-<时间戳>` 备份。
+
+---
+
+## [0.1.0] - 2026-09-10
 
 首个版本。`@dsh-external/dsh-rescue`：DSH 本体起不来时，用独立于失败组合的极简创造模式 agent 诊断并修复本体。
 
