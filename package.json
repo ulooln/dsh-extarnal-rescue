@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-rescue",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "DSH 本体自毁救援：dsh 无法启动时，用独立于 profile 组合的极简 agent（创造模式工具面）诊断并修复本体。",
   "private": true,
   "type": "module",

@@ -17,8 +17,9 @@ import type {
   PlaneInfo, ProfileInfo, UnresolvedInsert,
 } from './types.ts'
 import {
-  dshHome, findCheckout, homePath, importFromPlane, isDirectory, planeCandidates, requireFromPlane,
+  dshHome, findCheckout, homePath, importFromPlane, isDirectory, packageRootDir, planeCandidates, requireFromPlane,
 } from './plane.ts'
+import { checkRescueCompatibility } from './compat.ts'
 
 /** Options for {@link runDoctor}. */
 export interface DoctorOptions {
@@ -109,15 +110,28 @@ function listProfileDirs(): string[] {
 }
 
 /**
- * One anchor a bundle name is resolved from, in the order the launcher itself
- * would try them: the profile's own project, the harness home, the deployment
- * plane, and this package.
- *
- * Resolution runs through Node's real package search rather than a direct
- * `node_modules/<name>` join, because that search is what decides whether the
- * launcher can load the bundle at all. A direct join reports a package as
- * missing when a parent directory would have supplied it, and this check exists
- * precisely to agree with the boot that just failed.
+ * Where a bundle name may live, in the order the launcher would look: the
+ * profile's own installed tree first, then the deployment plane, then this
+ * package. These are directories that ARE `node_modules` roots, so they are
+ * checked directly — Node's own search only finds them by accident, when the
+ * path happens to end in a directory named `node_modules`.
+ * @param profileDir - the profile directory.
+ * @param planeRoot - the plane's node_modules root, when one is usable.
+ * @param packageDir - this package's directory.
+ * @returns absolute directories to look in, best first.
+ */
+function bundleRoots(profileDir: string, planeRoot: string | undefined, packageDir: string | undefined): string[] {
+  return [
+    join(profileDir, 'node_modules'),
+    ...planeRoot === undefined ? [] : [planeRoot],
+    ...packageDir === undefined ? [] : [join(packageDir, 'node_modules')],
+  ]
+}
+
+/**
+ * Anchors Node's own package search is run from, so a package reachable only
+ * through a parent directory is still found — the shape a hoisted or pnpm-linked
+ * install takes.
  * @param profileDir - the profile directory.
  * @param planeRoot - the plane's node_modules root, when one is usable.
  * @param packageDir - this package's directory.
@@ -125,13 +139,17 @@ function listProfileDirs(): string[] {
  */
 function bundleAnchors(profileDir: string, planeRoot: string | undefined, packageDir: string | undefined): string[] {
   const anchors = [join(profileDir, 'package.json'), join(dshHome(), 'package.json')]
-  if (planeRoot !== undefined) anchors.push(join(planeRoot, 'noop.cjs'))
+  if (planeRoot !== undefined) anchors.push(join(planeRoot, '..', 'noop.cjs'))
   if (packageDir !== undefined) anchors.push(join(packageDir, 'package.json'))
   return anchors
 }
 
-/** Resolve a package directory through Node's own search from the given anchors. */
-function resolvePackageDir(name: string, anchors: readonly string[]): string | undefined {
+/** Resolve a package directory from the given roots, then through Node's own search. */
+function resolvePackageDir(name: string, roots: readonly string[], anchors: readonly string[]): string | undefined {
+  for (const root of roots) {
+    const candidate = join(root, name)
+    if (existsSync(join(candidate, 'package.json'))) return candidate
+  }
   for (const anchor of anchors) {
     let searchPaths: string[] | null
     try {
@@ -158,8 +176,8 @@ function resolvePackageDir(name: string, anchors: readonly string[]): string | u
  * @param anchors - resolution anchors from {@link bundleAnchors}.
  * @returns the bundle's state, resolved or not.
  */
-function readBundle(name: string, anchors: readonly string[]): BundleInfo {
-  const dir = resolvePackageDir(name, anchors)
+function readBundle(name: string, roots: readonly string[], anchors: readonly string[]): BundleInfo {
+  const dir = resolvePackageDir(name, roots, anchors)
   if (dir === undefined) {
     return { name, resolved: false, code: 'unresolved', error: `package ${name} cannot be resolved from the profile, the harness home, or a deployment plane` }
   }
@@ -626,7 +644,11 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
     const manifest = asRecord(manifestParsed.value) ?? {}
     const rawBundles = asRecord(asRecord(manifest.dsh)?.profile)?.bundles
     const bundles = Array.isArray(rawBundles) ? rawBundles.filter((entry): entry is string => typeof entry === 'string') : []
-    const bundleInfos = bundles.map(bundle => readBundle(bundle, bundleAnchors(dir, usable?.root, options.packageDir)))
+    const bundleInfos = bundles.map(bundle => readBundle(
+      bundle,
+      bundleRoots(dir, usable?.root, options.packageDir),
+      bundleAnchors(dir, usable?.root, options.packageDir),
+    ))
     const layers: PatchLayerInfo[] = []
     for (const bundle of bundleInfos) {
       if (bundle.resolved && bundle.patch !== undefined) layers.push(readLayer(bundle.patch, 'bundle', usable?.root, schema))
@@ -887,6 +909,33 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
     })
   }
 
+  // The rescue's own composition is checked too, because it overrides deployment
+  // rows by id and an override that matches nothing is a Loader warning rather
+  // than a failure: the rescue would still start, having quietly lost the
+  // permissions it needs to write anything outside the working directory.
+  const compatibility = usable === undefined ? undefined : await checkRescueCompatibility(usable.root, options.packageDir)
+  if (compatibility !== undefined && !compatibility.ok) {
+    const blocking = compatibility.criticalMissing.length > 0
+    findings.push({
+      code: blocking ? 'rescue-composition-critical' : 'rescue-composition-drifted',
+      level: blocking ? 'error' : 'warn',
+      title: blocking
+        ? 'the rescue can no longer claim full file access on this deployment'
+        : 'the rescue composition no longer matches this deployment',
+      detail: [
+        compatibility.baseVersion === undefined ? 'the deployment base bundle could not be composed' : `dsh-base ${compatibility.baseVersion}`,
+        compatibility.missingTargets.length === 0 ? '' : `overrides that apply to nothing: ${compatibility.missingTargets.join(', ')}`,
+        compatibility.collisions.length === 0 ? '' : `inserted rows whose id the deployment already uses: ${compatibility.collisions.join(', ')}`,
+        compatibility.unresolvedRows.length === 0 ? '' : `inserted rows whose package is missing: ${compatibility.unresolvedRows.join(', ')}`,
+        blocking
+          ? 'Without the permission rows the rescue agent is confined to the working directory and its approval requests have no answerer, so it cannot write the files it was started to repair. The rescue refuses to start rather than run crippled.'
+          : 'The rescue still starts, but the listed overrides silently do nothing.',
+      ].filter(line => line !== '').join('\n'),
+      evidence: compatibility.basePatch,
+      fix: `Update the row ids in ${join(packageRootDir(), 'rescue.cordis.yml')} to match this deployment, or point the rescue at a plane it does match with --plane.`,
+    })
+  }
+
   return {
     generatedAt: new Date().toISOString(),
     node: process.version,
@@ -900,6 +949,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
     profiles,
     incident,
     boot,
+    compatibility,
     model: model === undefined || model.error !== undefined ? undefined : { provider: model.provider, model: model.model, source: model.source },
     credentials,
     findings,

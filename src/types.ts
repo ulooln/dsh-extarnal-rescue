@@ -126,6 +126,30 @@ export interface ProfileInfo {
 /** Why a boot run is believed to have failed, from the signatures in its output. */
 export type CrashReason = 'session-corrupt' | 'bundle-check' | 'patch-tree' | 'port-bind' | 'settings' | 'unknown'
 
+/** How this rescue's own composition differs from the deployment's base bundle. */
+export interface CompositionDiff {
+  /** Overrides the rescue applies that the deployment does not provide. */
+  missingTargets: string[]
+  /** Rescue inserts whose id the deployment already uses. */
+  collisions: string[]
+  /** Missing overrides that stop the rescue from repairing at all. */
+  criticalMissing: string[]
+}
+
+/** The full compatibility picture for one deployment plane. */
+export interface RescueCompatibility extends CompositionDiff {
+  /** The plane the comparison ran against. */
+  planeRoot: string
+  /** The deployment base bundle's patch file. */
+  basePatch: string
+  /** `@deepseek-ai/dsh-base` version found in that plane. */
+  baseVersion?: string
+  /** Inserted rows whose package the plane cannot resolve. */
+  unresolvedRows: string[]
+  /** Whether every override and insert still applies. */
+  ok: boolean
+}
+
 /**
  * The last boot's outcome, written by whoever ran it.
  *
@@ -217,6 +241,8 @@ export interface DoctorReport {
   incident?: Incident
   /** The previous run's outcome, inferred from the boot handshake. */
   boot: BootReport
+  /** Whether this rescue's own composition still matches the deployment. */
+  compatibility?: RescueCompatibility
   /** Resolved model route for the repair agent. */
   model?: { provider: string; model: string; source: string }
   /** Credential availability, never a credential value. */

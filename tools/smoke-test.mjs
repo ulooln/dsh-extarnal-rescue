@@ -193,6 +193,60 @@ try {
   else process.env.DSH_HOME = previousHome
 }
 
+// ── compatibility with a deployment that changed under us ───────────────────
+// An override that matches nothing is a Loader warning, not a failure: the
+// rescue would boot with default permissions and silently be unable to write.
+const compat = await import(lib('compat.js'))
+
+const unchanged = compat.diffComposition(['a', 'b', 'sandbox-policy', 'approval'], ['a', 'sandbox-policy', 'approval'], ['new-row'])
+check('compat: an unchanged deployment reports nothing missing', unchanged.missingTargets.length === 0)
+check('compat: an unchanged deployment reports no collisions', unchanged.collisions.length === 0)
+check('compat: an unchanged deployment is not crippled', unchanged.criticalMissing.length === 0)
+
+const renamed = compat.diffComposition(['timer'], ['sandbox-policy', 'approval', 'system-prompt'], ['tool-cordis'])
+equal('compat: renamed rows are reported', renamed.missingTargets.join(','), 'sandbox-policy,approval,system-prompt')
+equal('compat: the permission rows are called out as critical', renamed.criticalMissing.join(','), 'sandbox-policy,approval')
+
+const collided = compat.diffComposition(['timer', 'tool-cordis'], [], ['timer2', 'tool-cordis'])
+equal('compat: an insert that collides is reported', collided.collisions.join(','), 'tool-cordis')
+
+const resolvedEntries = [
+  { options: { id: 'sandbox-policy' }, fiber: { config: { mode: 'danger-full-access' } } },
+  { options: { id: 'approval' }, fiber: { config: { policy: 'never' } } },
+  { options: { id: 'system-prompt' }, fiber: { config: { persona: 'rescue' } } },
+  { options: { id: 'skill-filesystem' }, fiber: { config: { customSkillDirs: ['a'] } } },
+]
+const healthy = compat.verifyMountedOverrides(resolvedEntries, { permissionMode: 'danger-full-access', approvalPolicy: 'never' })
+check('mounted: a correct tree blocks nothing', healthy.blocking.length === 0, healthy.blocking.join('; '))
+check('mounted: a correct tree warns about nothing', healthy.cosmetic.length === 0, healthy.cosmetic.join('; '))
+
+// The entry keeps its unevaluated `!!js` expression while the fiber holds the
+// resolved value. Reading the wrong one would refuse a healthy deployment.
+const unevaluated = [
+  { options: { id: 'sandbox-policy', config: { mode: { __jsExpr: "process.env.X || 'danger-full-access'" } } }, fiber: { config: { mode: 'danger-full-access' } } },
+  { options: { id: 'approval' }, fiber: { config: { policy: 'never' } } },
+]
+check('mounted: the resolved fiber config is what counts',
+  compat.verifyMountedOverrides(unevaluated, { permissionMode: 'danger-full-access', approvalPolicy: 'never' }).blocking.length === 0)
+
+const cannotTell = compat.verifyMountedOverrides(
+  [{ options: { id: 'sandbox-policy' }, fiber: { config: { mode: { __jsExpr: 'x' } } } },
+    { options: { id: 'approval' }, fiber: { config: { policy: 'never' } } }],
+  { permissionMode: 'danger-full-access', approvalPolicy: 'never' },
+)
+check('mounted: an unreadable value does not block', cannotTell.blocking.length === 0, cannotTell.blocking.join('; '))
+check('mounted: an unreadable value is reported instead', cannotTell.cosmetic.some(line => line.includes('could not be read back')))
+
+equal('mounted: missing permission rows block',
+  compat.verifyMountedOverrides([], { permissionMode: 'danger-full-access', approvalPolicy: 'never' }).blocking.length, 2)
+
+const wrong = compat.verifyMountedOverrides(
+  [{ options: { id: 'sandbox-policy' }, fiber: { config: { mode: 'workspace-write' } } },
+    { options: { id: 'approval' }, fiber: { config: { policy: 'never' } } }],
+  { permissionMode: 'danger-full-access', approvalPolicy: 'never' },
+)
+check('mounted: a wrong resolved value blocks', wrong.blocking.length === 1 && wrong.blocking[0].includes('workspace-write'))
+
 if (failures.length > 0) {
   console.error(`smoke-test: FAIL (${failures.length} of ${passed + failures.length})`)
   for (const failure of failures) console.error(`  - ${failure}`)

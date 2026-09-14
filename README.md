@@ -1,6 +1,6 @@
 # @dsh-external/dsh-rescue
 
-**版本 0.2.0** · 2026-09-10 · 许可 BSD-3-Clause · 状态：可用（Windows + DSH `0.1.3-alpha.1` 端到端实测通过）· 变更见 [CHANGELOG.md](CHANGELOG.md)
+**版本 0.3.0** · 2026-09-10 · 许可 BSD-3-Clause · 状态：可用（Windows + DSH `0.1.3-alpha.1` 端到端实测通过）· 变更见 [CHANGELOG.md](CHANGELOG.md)
 
 DSH 本体自毁救援：**当 dsh 起不来、Web UI 也进不去的时候**，用一条命令拉起一个独立的、具备「创造模式」工具面的极简 agent，让它诊断并修复本体。
 
@@ -99,6 +99,26 @@ dsh-rescue repair                 # 交互 REPL：rescue>
 3. **agent 兜底**：机械修复没救回来，才把「诊断 + 失败原文 + 机械修复已尝试并回滚」交给救援 agent。
 
 `supervise` 全程退出码 `0` 的含义是：**profile 最终起来了**，无论靠机械修复还是靠 agent。
+
+## 更新 DSH 之后还能用吗
+
+救援层是**按 id 覆盖**部署自己 `dsh-base` 的那些行（persona、权限、状态目录、技能目录）的。**被覆盖的行一旦不存在，Loader 只警告、不报错**——救援照样启动，却悄悄退回 dsh-base 的默认值：agent 被限制在工作目录内，审批策略又回到 `ask` 而终端救援没有应答者，于是一个文件也写不动，而输出里不会有任何东西说明原因。
+
+所以这件事被拆成两道：
+
+- **启动前**：`dsh-rescue doctor`（或 `rescue_doctor`）把救援层与当前部署的 base bundle 做组合比对，报出覆盖了但不存在的行、与部署冲突的插入行、包缺失的插入行；权限行缺失直接报 error，并指出该改哪个文件。
+- **启动后**：`repair` / `supervise` 读回**已挂载**的树确认权限覆盖真的生效；确认失败就**拒绝启动**，而不是跑一个修不了东西的 agent。它只在「行不存在」或「解析后的值确实不符」时拒绝；值读不出来只警告——不能因为读不懂就否掉一个正常部署。
+
+判定用的是**启动器自己的口径**：按 Node 的真实包搜索解析 + 组合后的行 id 集合。当前 dsh-base `0.1.3-alpha.1` 上的结论是 `ok: true`（8 个覆盖行 + 2 个插入行全部命中）。
+
+升级 DSH 后的推荐动作：
+
+```sh
+dsh-rescue doctor          # 先看 rescue-composition 那一条
+dsh-rescue fix --dry-run   # 顺带看部署本身有没有需要机械修复的
+```
+
+若报 `rescue-composition-critical`，说明这次升级挪动了权限行；改 `rescue.cordis.yml` 里的行 id 即可，或用 `--plane` 指向一个仍然匹配的平面（例如旧的安装）。
 
 ## 崩溃归因：没人看着也能知道上次崩了
 
