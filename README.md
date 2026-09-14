@@ -1,6 +1,6 @@
 # @dsh-external/dsh-rescue
 
-**版本 0.3.0** · 2026-09-10 · 许可 BSD-3-Clause · 状态：可用（Windows + DSH `0.1.3-alpha.1` 端到端实测通过）· 变更见 [CHANGELOG.md](CHANGELOG.md)
+**版本 0.3.1** · 2026-09-10 · 许可 BSD-3-Clause · 状态：可用（Windows + DSH `0.1.3-alpha.1` 端到端实测通过）· 变更见 [CHANGELOG.md](CHANGELOG.md)
 
 DSH 本体自毁救援：**当 dsh 起不来、Web UI 也进不去的时候**，用一条命令拉起一个独立的、具备「创造模式」工具面的极简 agent，让它诊断并修复本体。
 
@@ -88,7 +88,7 @@ dsh-rescue repair                 # 交互 REPL：rescue>
 
 `supervise` 的三段式，按代价从低到高：
 
-1. **捕获**：真启一次目标 profile（默认 25s 启动窗口）。窗口内还活着 = 起来了，直接退出；退出码非 0 = 失败，把命令、cwd、退出码、耗时、**完整 stdout+stderr**、识别出的诊断行，连同失败那一刻的配置文件快照，写进 `incidents/<时间戳>/`。
+1. **捕获**：真启一次目标 profile（默认 25s 启动窗口）。**判定不只看进程是否还活着**：装载失败的 DSH 要十几秒才退出（实测 13.6s），所以进程仍活着时还会看输出里有没有失败特征，并在窗口到期后多留 4 秒再下结论——否则会把一具正在死掉的尸体报成「已启动」，进而跳过修复。退出码 0 = 起来了；非零 = 没起来；仍在运行且输出无失败特征 = 起来了。失败则把命令、cwd、退出码、耗时、**完整 stdout+stderr**、识别出的诊断行，连同失败那一刻的配置文件快照，写进 `incidents/<时间戳>/`。
 2. **机械修复**（不调模型）：只有两类故障有唯一最小修法，两类都是启动器本身逼出来的：
    - **插入的行其包解析不了** —— 在 profile 自己的 `cordis.patch.yml` 末尾追加一条禁用补丁。不删任何内容，无论这条 insert 来自 profile 还是它下面的 bundle 都有效。
    - **bundle 装载不了** —— bundle 层**没有 disable 开关**，所以唯一的最小修法是把它的名字从 `dsh.profile.bundles` 里移除。包留在 `node_modules`、`dependencies` 条目也留着，装回来是一行的事。判据与启动器一致：包能按 Node 的真实解析搜到、manifest 里有 `dsh.bundle.patch`、那个文件确实存在——三者任一不满足，整棵树都装载失败（诊断里分别报 `bundle-unresolved` / `bundle-no-patch` / `bundle-patch-missing`）。

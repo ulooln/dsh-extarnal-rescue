@@ -9,4 +9,4 @@
  * @module @dsh-external/dsh-rescue/version
  */
 /** The version this build reports. Keep in step with `package.json`. */
-export declare const PACKAGE_VERSION = "0.3.0";
+export declare const PACKAGE_VERSION = "0.3.1";

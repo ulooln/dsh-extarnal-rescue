@@ -247,6 +247,29 @@ const wrong = compat.verifyMountedOverrides(
 )
 check('mounted: a wrong resolved value blocks', wrong.blocking.length === 1 && wrong.blocking[0].includes('workspace-write'))
 
+// ── the boot verdict ────────────────────────────────────────────────────────
+// Liveness alone reported a dead deployment as healthy: a DSH that fails to load
+// takes about fourteen seconds to die, so a short window saw a corpse in progress
+// still running, and supervise would then skip the repair entirely.
+const probe = await import(lib('probe.js'))
+
+check('verdict: a clean exit is up', probe.bootOutcome(0, '') === 'up')
+check('verdict: a non-zero exit is down', probe.bootOutcome(1, 'anything') === 'down')
+check('verdict: silence from a live process is up', probe.bootOutcome(null, 'dsh: serving on 127.0.0.1:3080') === 'up')
+
+const FAILING = 'Error: dsh: plugin tree failed to load: failed to import loader entry x: Cannot find package "@x/y"'
+check('verdict: a live process already failing is undecided', probe.bootOutcome(null, FAILING) === 'undecided')
+check('verdict: a failing process shows the signature', probe.showsBootFailure(FAILING))
+check('verdict: ordinary output shows no failure', !probe.showsBootFailure('dsh: web ui at http://127.0.0.1:3080'))
+check('verdict: a module-not-found trace counts', probe.showsBootFailure('code: "ERR_MODULE_NOT_FOUND"'))
+check('verdict: a bind collision counts', probe.showsBootFailure('listen EADDRINUSE: address already in use 127.0.0.1:3080'))
+check('verdict: a duplicate entry id counts', probe.showsBootFailure('duplicate loader entry id: timer'))
+// The extractor is deliberately broader than the verdict: a reader can judge a
+// hint, and this decision cannot afford to.
+check('verdict: the verdict is narrower than the diagnostic extractor',
+  doctor.extractBootSignals('TypeError: x is not a function').length > 0
+  && !probe.showsBootFailure('TypeError: x is not a function'))
+
 if (failures.length > 0) {
   console.error(`smoke-test: FAIL (${failures.length} of ${passed + failures.length})`)
   for (const failure of failures) console.error(`  - ${failure}`)

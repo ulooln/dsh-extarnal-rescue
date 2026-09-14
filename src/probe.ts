@@ -133,10 +133,16 @@ export async function captureBoot(options: CaptureOptions): Promise<BootAttempt>
     }
 
     let settled = false
+    let grace: ReturnType<typeof setTimeout> | undefined
+    let poll: ReturnType<typeof setTimeout> | undefined
+    let settle: ReturnType<typeof setTimeout> | undefined
     const finish = (exitCode: number | null, booted: boolean, pid?: number): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (grace !== undefined) clearTimeout(grace)
+      if (poll !== undefined) clearTimeout(poll)
+      if (settle !== undefined) clearTimeout(settle)
       closeSync(log)
       const output = readLog(options.logPath)
       if (options.echo === true && output !== '') process.stderr.write(output)
@@ -151,7 +157,28 @@ export async function captureBoot(options: CaptureOptions): Promise<BootAttempt>
       })
     }
 
+    // A failure in flight is reported as soon as it is knowable: a failing DSH
+    // prints its error and exits several seconds after it stops making progress,
+    // so waiting for the deadline to look would often look too early.
+    const awaitDeath = (): void => {
+      if (settled) return
+      grace = setTimeout(() => {
+        child.kill()
+        finish(null, false)
+      }, FAILURE_GRACE_MS)
+    }
+    const watch = (): void => {
+      if (settled) return
+      if (showsBootFailure(readLog(options.logPath))) {
+        awaitDeath()
+        return
+      }
+      poll = setTimeout(watch, FAILURE_POLL_MS)
+    }
+    poll = setTimeout(watch, FAILURE_POLL_MS)
+
     const timer = setTimeout(() => {
+      if (settled) return
       if (options.keepAlive === true) {
         // A long-lived surface that bound its port and never exited is up; it
         // keeps running, detached, after this supervisor leaves.
@@ -159,8 +186,14 @@ export async function captureBoot(options: CaptureOptions): Promise<BootAttempt>
         finish(null, true, child.pid)
         return
       }
-      child.kill()
-      finish(null, true)
+      // Alive at the deadline is not yet proof of success. Hold briefly while
+      // the watcher keeps looking: a boot that is failing right now will say so
+      // within this window, and calling it up would report a dead deployment as
+      // healthy and skip the repair entirely.
+      settle = setTimeout(() => {
+        child.kill()
+        finish(null, true)
+      }, SETTLE_MS)
     }, options.timeoutMs)
 
     child.on('error', (error: Error) => {
@@ -173,11 +206,70 @@ export async function captureBoot(options: CaptureOptions): Promise<BootAttempt>
   return attempt
 }
 
-/** Files worth preserving exactly as they were at the moment of failure. */
-const SNAPSHOT_FILES = ['package.json', 'cordis.patch.yml', 'pnpm-workspace.yaml'] as const
+/** How long a failing boot is given to finish dying so its exit code is captured. */
+export const FAILURE_GRACE_MS = 20_000
+
+/** How often the captured output is re-read while waiting for a boot. */
+export const FAILURE_POLL_MS = 500
+
+/** How long a boot alive at its deadline is watched before being called up. */
+export const SETTLE_MS = 4_000
+
+/**
+ * Signatures that say a boot is failing, matched narrowly on purpose.
+ *
+ * This decides whether a still-running process came up, so a false positive
+ * reports a dead deployment as healthy and skips the repair entirely — the worst
+ * outcome this tool can produce. It is therefore much narrower than
+ * {@link extractBootSignals}, which only has to be useful to a reader.
+ */
+const BOOT_FAILURE_SIGNATURES: readonly RegExp[] = [
+  /plugin tree failed to load/,
+  /plugin\(s\) failed to load/,
+  /failed to import loader entry/,
+  /duplicate loader entry id/,
+  /did not activate/,
+  /fatal load failure/,
+  /already registered/,
+  /invalid config/,
+  /Cannot find package/,
+  /ERR_MODULE_NOT_FOUND/,
+  /must be a top-level YAML array/,
+  /failed to parse (patches|overlay|config)/,
+  /EADDRINUSE/,
+]
+
+/**
+ * Whether captured output shows a boot that is failing.
+ * @param text - the captured output so far.
+ * @returns true when a failure signature is present.
+ */
+export function showsBootFailure(text: string): boolean {
+  return BOOT_FAILURE_SIGNATURES.some(pattern => pattern.test(text))
+}
+
+/**
+ * Decide what a boot attempt means, from its exit code and its output.
+ *
+ * Liveness alone is not evidence of success: a DSH that fails to load takes more
+ * than ten seconds to die, so a process still running at the deadline may be a
+ * corpse in progress. Exit code 0 is success, a non-zero exit is failure, and a
+ * live process is only success when nothing in its output says otherwise.
+ * @param exitCode - the process exit code, or `null` while it is still running.
+ * @param output - everything the process printed.
+ * @returns `up`, `down`, or `undecided` for a live process with a failure in flight.
+ */
+export function bootOutcome(exitCode: number | null, output: string): 'up' | 'down' | 'undecided' {
+  if (exitCode === 0) return 'up'
+  if (exitCode !== null) return 'down'
+  return showsBootFailure(output) ? 'undecided' : 'up'
+}
 
 /** Keep at most this many incident directories. */
 const MAX_INCIDENTS = 20
+
+/** Files worth preserving exactly as they were at the moment of failure. */
+const SNAPSHOT_FILES = ['package.json', 'cordis.patch.yml', 'pnpm-workspace.yaml'] as const
 
 /**
  * Persist one failed attempt, with the profile state that produced it.
