@@ -26,6 +26,7 @@ import { captureBoot, writeIncident } from './probe.ts'
 import { applyMechanicalFixes } from './repair.ts'
 import { renderJson, renderReport } from './report.ts'
 import { writeShim } from './shim.ts'
+import { buildSparePlane, inspectSparePlane, planeSize } from './spare.ts'
 
 /** Resolve the plane a capture should run against, preferring a usable one. */
 async function resolveProbePlane(invocation: Invocation): Promise<string | undefined> {
@@ -249,6 +250,56 @@ async function commandRepair(invocation: Invocation): Promise<number> {
   })
 }
 
+/** `spare`: keep a second plane the rescue can boot from while upgrading. */
+async function commandSpare(invocation: Invocation): Promise<number> {
+  const dest = invocation.dest === '' ? join(invocation.stateRoot, 'plane') : invocation.dest
+  if (invocation.check) {
+    const inspection = inspectSparePlane(dest)
+    if (!inspection.exists) {
+      process.stderr.write(`dsh-rescue: no spare plane at ${dest}; build one with dsh-rescue spare\n`)
+      return 6
+    }
+    process.stdout.write(`dsh-rescue: spare plane ${dest}\n`)
+    process.stdout.write(`  packages   ${String(inspection.entries)}${inspection.plane.version === undefined ? '' : ` (dsh-base ${inspection.plane.version})`}\n`)
+    process.stdout.write(`  usable     ${inspection.plane.usable ? 'yes' : 'no'}\n`)
+    if (inspection.dangling.length > 0) {
+      const extra = inspection.dangling.length > 5 ? ` (+${String(inspection.dangling.length - 5)} more)` : ''
+      process.stdout.write(`  dangling   ${inspection.dangling.slice(0, 5).join(', ')}${extra}\n`)
+      process.stderr.write('dsh-rescue: the spare points at packages that no longer exist; rebuild it with dsh-rescue spare\n')
+    }
+    if (!inspection.plane.usable) {
+      process.stderr.write(`dsh-rescue: the spare is incomplete, missing: ${inspection.plane.missing.join(', ')}\n`)
+      return 6
+    }
+    return 0
+  }
+
+  const source = invocation.from ?? await resolveProbePlane(invocation)
+  if (source === undefined) {
+    process.stderr.write('dsh-rescue: no usable deployment plane to build a spare from; run dsh-rescue doctor\n')
+    return 2
+  }
+  const mode = invocation.copy ? 'copy' as const : 'links' as const
+  const size = mode === 'copy' ? planeSize(source) : undefined
+  process.stderr.write(`dsh-rescue: building a ${mode} spare plane from ${source}\n`)
+  if (size !== undefined && !size.truncated) process.stderr.write(`dsh-rescue: copying about ${String(Math.round(size.bytes / 1_048_576))} MB\n`)
+  const spare = buildSparePlane(source, dest, mode)
+  for (const line of spare.skipped.slice(0, 5)) process.stderr.write(`dsh-rescue: skipped ${line}\n`)
+  if (spare.skipped.length > 5) process.stderr.write(`dsh-rescue: skipped ${String(spare.skipped.length - 5)} further entries\n`)
+  process.stdout.write(`dsh-rescue: spare plane ready at ${spare.dest}\n`)
+  process.stdout.write(`  source     ${spare.source}\n`)
+  process.stdout.write(`  mode       ${spare.mode}${spare.mode === 'links' ? ' (follows the source packages; --copy is physically independent)' : ''}\n`)
+  process.stdout.write(`  packages   ${String(spare.entries)}${spare.plane.version === undefined ? '' : ` (dsh-base ${spare.plane.version})`}\n`)
+  process.stdout.write(`  usable     ${spare.plane.usable ? 'yes' : 'no'}\n`)
+  if (!spare.plane.usable) {
+    process.stderr.write(`dsh-rescue: the spare is incomplete, missing: ${spare.plane.missing.join(', ')}\n`)
+    return 6
+  }
+  process.stdout.write(`  use it     dsh-rescue repair --plane ${spare.dest}\n`)
+  process.stdout.write('  check it   dsh-rescue spare --check\n')
+  return 0
+}
+
 /** Run one invocation and return its exit code. */
 async function main(): Promise<number> {
   let invocation: Invocation
@@ -261,6 +312,7 @@ async function main(): Promise<number> {
   switch (invocation.command) {
     case 'help': process.stdout.write(USAGE); return 0
     case 'shim': return installShim(invocation.stateRoot)
+    case 'spare': return await commandSpare(invocation)
     case 'doctor': return await commandDoctor(invocation)
     case 'verify': return await commandVerify(invocation)
     case 'fix': return await commandFix(invocation)

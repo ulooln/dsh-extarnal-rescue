@@ -355,6 +355,48 @@ try {
   else process.env.PATH = previousPath
 }
 
+// ── the spare plane ─────────────────────────────────────────────────────────
+// The spare is what the rescue boots from while the install under repair is being
+// rewritten, so it has to be complete, refreshable, and honest about which mode
+// it is in.
+const spareModule = await import(lib('spare.js'))
+const spareSource = join(scratch, 'spare-source')
+const spareDest = join(scratch, 'spare-dest')
+for (const [name, version] of [
+  ['@deepseek-ai/cordis', '4.0.0'], ['@deepseek-ai/cordis-plugin-loader', '4.0.0'],
+  ['@deepseek-ai/cordis-plugin-include', '4.0.0'], ['@deepseek-ai/cordis-plugin-timer', '4.0.0'],
+  ['@deepseek-ai/dsh-app-boot', '0.1.0'], ['@deepseek-ai/dsh-base', '0.1.3-alpha.1'],
+  ['plain-package', '1.0.0'],
+]) {
+  const dir = join(spareSource, name)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version }))
+}
+writeFileSync(join(spareSource, '.package-lock.json'), '{}\n')
+mkdirSync(join(spareSource, '@deepseek-ai', 'empty-scope'), { recursive: true })
+
+const spare = spareModule.buildSparePlane(spareSource, spareDest)
+check('spare: the built spare is usable', spare.plane.usable === true, spare.plane.missing.join(', '))
+equal('spare: every package entry is materialized', spare.entries, 7)
+equal('spare: metadata files are not packages', existsSync(join(spareDest, '.package-lock.json')), false)
+check('spare: a package resolves through the spare', existsSync(join(spareDest, '@deepseek-ai', 'dsh-base', 'package.json')))
+check('spare: the spare reports the source version', spare.plane.version === '0.1.3-alpha.1', String(spare.plane.version))
+check('spare: an entry without a manifest is not a package', !existsSync(join(spareDest, '@deepseek-ai', 'empty-scope')))
+
+const rebuilt = spareModule.buildSparePlane(spareSource, spareDest)
+check('spare: rebuilding keeps it usable', rebuilt.plane.usable === true && rebuilt.skipped.length === 0)
+
+const inspection = spareModule.inspectSparePlane(spareDest)
+check('spare: an intact spare reports usable', inspection.exists && inspection.plane.usable)
+equal('spare: an intact spare has nothing dangling', inspection.dangling.length, 0)
+rmSync(join(spareSource, 'plain-package'), { recursive: true, force: true })
+const afterRemoval = spareModule.inspectSparePlane(spareDest)
+equal('spare: a removed source package dangles', afterRemoval.dangling.length, 1)
+check('spare: dangling is named', afterRemoval.dangling[0] === 'plain-package', String(afterRemoval.dangling[0]))
+
+const missing = spareModule.inspectSparePlane(join(scratch, 'no-such-spare'))
+check('spare: an absent spare reports absent', missing.exists === false && missing.plane.usable === false)
+
 if (failures.length > 0) {
   console.error(`smoke-test: FAIL (${failures.length} of ${passed + failures.length})`)
   for (const failure of failures) console.error(`  - ${failure}`)

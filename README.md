@@ -1,6 +1,6 @@
 # @dsh-external/dsh-rescue
 
-**版本 0.3.3** · 2026-09-10 · 许可 BSD-3-Clause · 状态：可用（Windows + DSH `0.1.3-alpha.1` 端到端实测通过）· 变更见 [CHANGELOG.md](CHANGELOG.md)
+**版本 0.4.0** · 2026-09-10 · 许可 BSD-3-Clause · 状态：可用（Windows + DSH `0.1.3-alpha.1` 端到端实测通过）· 变更见 [CHANGELOG.md](CHANGELOG.md)
 
 DSH 本体自毁救援：**当 dsh 起不来、Web UI 也进不去的时候**，用一条命令拉起一个独立的、具备「创造模式」工具面的极简 agent，让它诊断并修复本体。
 
@@ -66,6 +66,7 @@ dsh-rescue fix [--dry-run]            只做「可证明」的机械修复（确
 dsh-rescue repair [任务...]           拉起极简创造模式 agent 修复（给任务=一次性，不给=交互 REPL）
 dsh-rescue supervise [-- <dsh 参数>]  先正常启目标 profile；起不来就自动修（先机械，后 agent）
 dsh-rescue shim                       在 $DSH_HOME/rescue 下装一个短启动器
+dsh-rescue spare [--check]            建一个备用平面（升级期间的保险），或检查已有的那个
 ```
 
 常用参数：
@@ -79,8 +80,11 @@ dsh-rescue shim                       在 $DSH_HOME/rescue 下装一个短启动
 | `--model` / `--provider` | 覆盖救援 agent 的模型路由，默认沿用部署自己的 `agent-default-model` |
 | `--timeout <ms>` | 启动窗口，默认 25000。窗口内仍存活 = 起来了 |
 | `--no-llm` | 只做确定性那一段，绝不调模型 |
+| `--from <dir>` / `--dest <dir>` | `spare`：从哪个平面建、建到哪里，默认「第一个可用平面」→ `<state-root>/plane` |
+| `--copy` | `spare`：复制包而不是链接（物理独立，代价与源平面等量的磁盘） |
+| `--check` | `spare`：只报告已有备用平面的状态，不重建 |
 
-退出码：`0` 正常 / `1` 救援 agent 报告失败 / `2` 没有可用的部署平面 / `3` 救援树自己起不来 / `4` 目标 profile 没起来 / `5` 没有可机械修复的问题。
+退出码：`0` 正常 / `1` 救援 agent 报告失败 / `2` 没有可用的部署平面 / `3` 救援树自己起不来 / `4` 目标 profile 没起来 / `5` 没有可机械修复的问题 / `6` 备用平面缺失或不完整。
 
 ## 典型流程
 
@@ -158,7 +162,22 @@ dsh-rescue fix --dry-run   # 顺带看部署本身有没有需要机械修复的
 | 升级把 `node_modules` 删空 / 依赖装不上 | **不能** | 没有可用平面时只剩静态诊断（退出码 2） |
 | 想退回上一个版本 | **不能** | 它只改 profile 的 patch 层与 bundle 列表，不管版本 |
 
-**把「不能」那一栏变成「能」的办法**：升级前留一个**独立平面**，即任意目录里放一份完好、可导入的 DSH 包集合（实测就是 `tmp/alt-plane` 那种：把每个包 junction 进去即可）。升级后 `--plane <那个目录>` 走救援；它和正在被升级的安装互不影响，因为救援只从平面读包，不读 profile 组合，也不要求平面叫 `node_modules`。
+**把「不能」那一栏变成「能」的办法**：升级前先建一个**备用平面**。
+
+```powershell
+& $rescue spare                  # 从当前可用平面建一个备用平面（默认 <state-root>/plane）
+& $rescue spare --check          # 升级后确认它还完好
+& $rescue repair --plane "$env:USERPROFILE\.dsh\rescue\plane"   # 本体起不来时从备用平面救援
+```
+
+两种模式，区别就是这个功能的全部意义：
+
+| 模式 | 命令 | 挡得住 | 挡不住 |
+| --- | --- | --- | --- |
+| **links**（默认） | `spare` | profile / patch / bundle / 插件层面的损坏；瞬时完成，不占额外磁盘 | 源安装的**包本身**被替换或删除（链接跟着走） |
+| **copy** | `spare --copy` | 上面全部，外加源安装被整体替换：备用平面是物理独立的 | 占用与源平面等量的磁盘；建立时要遍历复制 |
+
+它和正在被升级的安装互不影响，因为救援只从平面读包，不读 profile 组合，也不要求平面叫 `node_modules`。
 
 ## 崩溃归因：没人看着也能知道上次崩了
 
@@ -195,6 +214,8 @@ $DSH_HOME/rescue/
   incidents/latest.json       最新一次，doctor 会读
   runs/<时间戳>/              每次救援：doctor.txt|json / mission.md / transcript.txt
   runtime/                    救援树锚点 + 指向平面的 node_modules 链接
+  plane/                      备用平面（dsh-rescue spare 建；--plane 可直接指它）
+  .shim-path-state            PATH 提示上次出现时的状态，用来避免重复提示
   sessions|storages|home/     救援 agent 自己的会话与状态（默认跟随部署，可被 --state-root 重定向）
 ```
 

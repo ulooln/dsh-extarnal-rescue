@@ -12,7 +12,7 @@ import type { PermissionMode } from './launcher.ts'
 
 /** Parsed command line. */
 export interface Invocation {
-  command: 'doctor' | 'verify' | 'fix' | 'repair' | 'supervise' | 'shim' | 'help'
+  command: 'doctor' | 'verify' | 'fix' | 'repair' | 'supervise' | 'shim' | 'spare' | 'help'
   plane?: string
   profile: string
   task?: string
@@ -26,11 +26,19 @@ export interface Invocation {
   dryRun: boolean
   timeoutMs: number
   args: string[]
+  /** `spare`: the plane to build the spare from. */
+  from?: string
+  /** `spare`: where the spare lives. */
+  dest: string
+  /** `spare`: copy the packages instead of linking them. */
+  copy: boolean
+  /** `spare`: report the existing spare instead of building one. */
+  check: boolean
 }
 
 /** The commands the parser accepts. */
 export const COMMANDS: ReadonlySet<string> = new Set([
-  'doctor', 'verify', 'fix', 'repair', 'supervise', 'shim', 'help',
+  'doctor', 'verify', 'fix', 'repair', 'supervise', 'shim', 'spare', 'help',
 ])
 
 export const USAGE = `dsh-rescue — repair a DeepSeek Harness deployment that will not start
@@ -42,6 +50,7 @@ Usage
   dsh-rescue repair [task...]            boot a minimal creation-mode agent and repair
   dsh-rescue supervise [-- <dsh args>]   run the target profile; on failure, fix it
   dsh-rescue shim                        install a short launcher under the harness home
+  dsh-rescue spare [--check]             keep a second plane for use while upgrading
 
 Options
   --plane <dir>            node_modules root to boot from (default: first usable)
@@ -57,12 +66,15 @@ Options
   --dry-run                report what fix would change without writing
   --json                   machine-readable doctor output
   --timeout <ms>           how long a boot attempt may run before it counts as up (default: 25000)
+  --from <dir>             spare: the plane to build from (default: first usable)
+  --dest <dir>             spare: where the spare lives (default: <state-root>/plane)
+  --copy                   spare: copy the packages instead of linking them
   -h, --help               this help
 
 Exit codes
   0 ok    1 the repair agent reported a failure    2 no usable deployment plane
   3 the rescue tree could not boot                 4 the target profile did not come up
-  5 nothing was mechanically fixable
+  5 nothing was mechanically fixable               6 the spare plane is missing or incomplete
 `
 
 /** Read one option value, failing loudly on a missing operand. */
@@ -89,6 +101,9 @@ export function parseArgs(args: readonly string[]): Invocation {
     dryRun: false,
     timeoutMs: 25_000,
     args: [],
+    dest: '',
+    copy: false,
+    check: false,
   }
   const rest: string[] = []
   let command: Invocation['command'] | undefined
@@ -103,9 +118,13 @@ export function parseArgs(args: readonly string[]): Invocation {
     if (arg === '--json') { invocation.json = true; continue }
     if (arg === '--no-llm') { invocation.noLlm = true; continue }
     if (arg === '--dry-run') { invocation.dryRun = true; continue }
+    if (arg === '--copy') { invocation.copy = true; continue }
+    if (arg === '--check') { invocation.check = true; continue }
     if (arg === '--plane') { invocation.plane = value(args, index, arg); index++; continue }
     if (arg === '--profile') { invocation.profile = value(args, index, arg); index++; continue }
     if (arg === '--state-root') { invocation.stateRoot = resolve(value(args, index, arg)); index++; continue }
+    if (arg === '--from') { invocation.from = resolve(value(args, index, arg)); index++; continue }
+    if (arg === '--dest') { invocation.dest = resolve(value(args, index, arg)); index++; continue }
     if (arg === '--workspace') { invocation.workspace = resolve(value(args, index, arg)); index++; continue }
     if (arg === '--model') { invocation.model = value(args, index, arg); index++; continue }
     if (arg === '--provider') { invocation.provider = value(args, index, arg); index++; continue }
