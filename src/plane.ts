@@ -183,15 +183,6 @@ export function planeUrl(root: string, ...segments: string[]): string {
 }
 
 /**
- * The trailing-slash base URL bare package names resolve against.
- * @param root - the plane's node_modules root.
- * @returns the absolute base URL.
- */
-export function planeBaseUrl(root: string): string {
-  return pathToFileURL(root).href + '/'
-}
-
-/**
  * Import a module from a plane by relative path, bypassing this process's own
  * module resolution so a broken package link here cannot break the rescue.
  * @param root - the plane's node_modules root.
@@ -234,6 +225,17 @@ export interface RescueRuntime {
   runnerUrl: string
   /** Absolute path of the include root the tree is anchored at. */
   rootConfig: string
+  /**
+   * The runtime directory itself — the base bare row names resolve from.
+   *
+   * Node's bare-name resolution always inserts a `node_modules` segment, so the
+   * base has to be a directory that *contains* one. Handing the plane root
+   * straight to the Loader therefore only worked when the plane happened to be a
+   * directory named `node_modules`; `--plane <any other name>` silently failed to
+   * resolve a single row. This directory's `node_modules` links the plane, so it
+   * works for a plane of any name.
+   */
+  rootDir: string
 }
 
 /**
@@ -274,7 +276,29 @@ export function prepareRuntime(stateRoot: string, planeRoot: string): RescueRunt
     rmSync(link, { recursive: true, force: true })
     symlinkSync(planeRoot, link, process.platform === 'win32' ? 'junction' : 'dir')
   }
-  return { runnerUrl: pathToFileURL(runner).href, rootConfig }
+  return { runnerUrl: pathToFileURL(runner).href, rootConfig, rootDir: runtimeDir }
+}
+
+/**
+ * Whether a directory is one of the entries on a PATH-style search path.
+ *
+ * The rescue's own launcher is only a command once its directory is on PATH, and
+ * a directory that is not there fails in the most confusing way possible: the
+ * shell reports the name as unknown, as if the tool did not exist. Comparing
+ * entries means resolving case and separator differences, because the value the
+ * user set and the value this process reads are not always spelled the same.
+ * @param dir - the directory to look for.
+ * @param searchPath - the PATH value; defaults to this process's.
+ * @returns true when the directory is on the search path.
+ */
+export function isOnSearchPath(dir: string, searchPath: string | undefined = process.env.PATH): boolean {
+  if (searchPath === undefined || searchPath === '') return false
+  const normalize = (value: string): string => {
+    const trimmed = value.trim().replace(/^"|"$/g, '').replace(/[\\/]+$/, '')
+    return process.platform === 'win32' ? trimmed.toLowerCase() : trimmed
+  }
+  const wanted = normalize(resolve(dir))
+  return searchPath.split(process.platform === 'win32' ? ';' : ':').some(entry => normalize(entry) === wanted)
 }
 
 /**

@@ -1,6 +1,6 @@
 # @dsh-external/dsh-rescue
 
-**版本 0.3.1** · 2026-09-10 · 许可 BSD-3-Clause · 状态：可用（Windows + DSH `0.1.3-alpha.1` 端到端实测通过）· 变更见 [CHANGELOG.md](CHANGELOG.md)
+**版本 0.3.2** · 2026-09-10 · 许可 BSD-3-Clause · 状态：可用（Windows + DSH `0.1.3-alpha.1` 端到端实测通过）· 变更见 [CHANGELOG.md](CHANGELOG.md)
 
 DSH 本体自毁救援：**当 dsh 起不来、Web UI 也进不去的时候**，用一条命令拉起一个独立的、具备「创造模式」工具面的极简 agent，让它诊断并修复本体。
 
@@ -40,6 +40,25 @@ DSH 本体自毁救援：**当 dsh 起不来、Web UI 也进不去的时候**，
 
 ## 用法
 
+### 先记住怎么调用它
+
+`dsh-rescue` **不是**一个装完就能敲的命令：启动器写在 `$DSH_HOME/rescue/`，而这个目录默认不在 PATH 上。直接敲裸名字会得到 `CommandNotFoundException`，看上去像「插件根本没装」，实际只是目录没上 PATH。所以先用完整路径把它调起来：
+
+```powershell
+# A. 完整路径（不动任何环境变量，崩了也能立刻用）
+& "$env:USERPROFILE\.dsh\rescue\dsh-rescue.cmd" doctor
+
+# 等价的原始形式（不依赖启动器是否存在）
+node C:\Home\skyer\dsh-rescue\lib\cli.js doctor
+```
+
+```sh
+# B. 让裸名字可用（Windows；写完要重开终端才生效）
+[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';' + "$env:USERPROFILE\.dsh\rescue", 'User')
+```
+
+两点权衡：① 这个目录同时存放救援状态（会话、incident、transcript），放上 PATH 会让整个目录出现在命令补全里；② 不想动环境就固定用 A，两种方式完全等价。挂载时插件会自己检查这件事：目录不在 PATH 上就在 stderr 打一条提示（含上面那条一次性 PATH 命令），而不是等你真崩了才发现喊不出来。
+
 ```
 dsh-rescue doctor [--json]            纯静态诊断：不启动、不调模型
 dsh-rescue verify                     真启一次目标 profile，报告起没起来
@@ -65,23 +84,27 @@ dsh-rescue shim                       在 $DSH_HOME/rescue 下装一个短启动
 
 ## 典型流程
 
-```sh
+下面用 `$rescue` 指代「怎么调用」里的那条完整路径；已经把它放上 PATH 的话直接写 `dsh-rescue`。
+
+```powershell
+$rescue = "$env:USERPROFILE\.dsh\rescue\dsh-rescue.cmd"   # 或 node <包目录>\lib\cli.js
+
 # 1. 平时：确认部署健康，并在做危险动作前留一张交接条
-dsh-rescue doctor
+& $rescue doctor
 
 # 2. 崩了：先看证据
-dsh-rescue verify                 # 真启一次，失败则把完整输出落盘
-dsh-rescue doctor                 # 静态诊断 + 最近一次启动失败
+& $rescue verify                  # 真启一次，失败则把完整输出落盘
+& $rescue doctor                  # 静态诊断 + 最近一次启动失败
 
 # 3. 一条命令修：先启；起不来就机械修复→复验；还不行才叫 agent
-dsh-rescue supervise -- --port 3080
+& $rescue supervise -- --port 3080
 
 # 4. 只想机械修复，不想要 agent
-dsh-rescue fix --dry-run          # 先看会改什么
-dsh-rescue fix
+& $rescue fix --dry-run           # 先看会改什么
+& $rescue fix
 
 # 5. 想自己盯着改
-dsh-rescue repair                 # 交互 REPL：rescue> 
+& $rescue repair                  # 交互 REPL：rescue>
 ```
 
 ## 修复策略：确定性优先，模型兜底
@@ -119,6 +142,23 @@ dsh-rescue fix --dry-run   # 顺带看部署本身有没有需要机械修复的
 ```
 
 若报 `rescue-composition-critical`，说明这次升级挪动了权限行；改 `rescue.cordis.yml` 里的行 id 即可，或用 `--plane` 指向一个仍然匹配的平面（例如旧的安装）。
+
+### 拿它当「升级保险」：管什么、不管什么
+
+可以拿它守着升级，但先分清边界：升级时最容易坏的是**配置面**（profile 组合、patch 层、bundle 列表、插件兼容），这正是它的主场；升级前 `doctor` 一次、用 `rescue_handoff` 留条，升级后起不来就 `supervise`。
+
+它**不是**升级器，也兜不住下面这几类：
+
+| 升级带来的问题 | 能不能救 | 原因 |
+| --- | --- | --- |
+| profile 组合 / patch 层 / bundle 列表坏了 | 能 | 救援路径不读这些文件，另起一棵树 |
+| 装插件、写 preset 之后启动链断掉 | 能 | 同上（exit code 3 只表示「所有平面都起不来」） |
+| 新版本挪了行 id、权限覆盖失效 | 能提前发现 | `doctor` 报 `rescue-composition-critical`，改 `rescue.cordis.yml` 的行 id |
+| **checkout 自己编译坏了**（`pnpm build` 失败、`lib/` 缺文件） | **不能** | 平面里的包就是坏的那一份；`--plane` 指向另一个完好安装才有救 |
+| 升级把 `node_modules` 删空 / 依赖装不上 | **不能** | 没有可用平面时只剩静态诊断（退出码 2） |
+| 想退回上一个版本 | **不能** | 它只改 profile 的 patch 层与 bundle 列表，不管版本 |
+
+**把「不能」那一栏变成「能」的办法**：升级前留一个**独立平面**，即任意目录里放一份完好、可导入的 DSH 包集合（实测就是 `tmp/alt-plane` 那种：把每个包 junction 进去即可）。升级后 `--plane <那个目录>` 走救援；它和正在被升级的安装互不影响，因为救援只从平面读包，不读 profile 组合，也不要求平面叫 `node_modules`。
 
 ## 崩溃归因：没人看着也能知道上次崩了
 
@@ -166,7 +206,7 @@ $DSH_HOME/rescue/
 
 - **平面回退**：一个平面起不来就换下一个可用平面；全都不行才放弃，并把诊断与失败原文打出来（退出码 3）。
 - **不读坏组合**：救援树只由 `dsh-base` 的 bundle patch + 本包 `rescue.cordis.yml` + runner 行组成；`rescue.cordis.yml` 只按 id 覆盖基础行。
-- **树基可解析**：救援树锚点与 runner 放在同一目录，该目录的 `node_modules` 指向平面——宿主行按 id 解析裸包名时也走这条路。
+- **树基可解析**：救援树锚点与 runner 放在同一目录，该目录的 `node_modules` 指向平面，宿主行按 id 解析裸包名时也走这条路。Node 的裸名解析**总会**插入一段 `node_modules`，所以基址必须是「含有 `node_modules` 的那个目录」，而不是平面根本身：把平面根交出去只有在平面恰好叫 `node_modules` 时才成立。早期版本就是这么错的，于是 `--plane <任意别的目录>` 不报错、只是**一行都解析不出来**，然后悄悄回退到别的平面，看上去像「平面参数没生效」。现在 `--plane` 指向任何名字的平面都能启动（实测：一个叫 `alt-plane` 的独立安装平面完整跑通救援 agent；把该平面里的 `dsh-base` 换成会抛错的桩之后，失败信息点名该平面路径，反证前一次的成功确实来自它）。
 - **模型路由预检**：每轮之前先跑一次「请求装配」预检（不发网络请求），把 `REQUEST_EXTENSION` 这类不透明错误变成点名到包的具体错误。
 - **无模型也能用**：没 key、没网、模型过期都不影响 `doctor`/`verify`/`supervise --no-llm` 给出结论。
 - **启动器自愈**：`runtime/` 与 `node_modules` 链接每次运行校验重建。
@@ -210,7 +250,7 @@ npm test            # = check:version + check:size + smoke-test
 | --- | --- |
 | `npm run check:version` | 版本号四处不一致：`package.json`、`src/version.ts` 的 `PACKAGE_VERSION`、README 头部、CHANGELOG 最新段；以及四段版本号这类非 semver 写法 |
 | `npm run check:size` | 整体积或单文件超限（挡住误提交的构建树、附件） |
-| `npm run smoke-test` | 纯逻辑回归：崩溃分类、specifier→包名、命令行文法、boot 握手、bundle 判据与机械修复（含 dry-run 不写、rollback 还原、拒删救援自身） |
+| `npm run smoke-test` | 纯逻辑回归：崩溃分类、specifier→包名、命令行文法、boot 握手、bundle 判据与机械修复（含 dry-run 不写、rollback 还原、拒删救援自身）、裸名基址（平面不叫 `node_modules` 也能解析）、PATH 判定 |
 
 `smoke-test` 跑在 `lib/` 上，所以先 `npm run build`。它不需要 DSH、不需要网络、不调模型，全部在临时目录里自建 fixture 并自清理。
 

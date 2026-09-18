@@ -604,11 +604,20 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
         evidence: plane.root,
       })
     } else {
+      // This package's own `node_modules` carries its compile-time links, not a
+      // harness install, so finding it incomplete is the normal state and not a
+      // deployment problem. It stays listed — it does become the boot plane when
+      // the rescue is installed inside a deployment — but at info, so a healthy
+      // deployment's first `doctor` does not open with a warning nobody can act on.
+      const ownLinks = plane.origin === 'package'
+      const missing = plane.missing.join(', ') || 'nothing listed'
       findings.push({
         code: 'plane-unusable',
-        level: 'warn',
+        level: ownLinks ? 'info' : 'warn',
         title: `deployment plane incomplete (${plane.origin})`,
-        detail: `${plane.root} is missing: ${plane.missing.join(', ') || 'nothing listed'}`,
+        detail: ownLinks
+          ? `${plane.root} carries this package's own link directory only, missing: ${missing}`
+          : `${plane.root} is missing: ${missing}`,
         evidence: plane.root,
       })
     }

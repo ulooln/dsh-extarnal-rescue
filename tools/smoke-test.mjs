@@ -7,8 +7,8 @@
 // arguments. Both have a case here, so neither can come back quietly.
 //
 // Usage: node tools/smoke-test.mjs   (run npm run build first)
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -160,6 +160,13 @@ try {
   check('bundle check: findings name each failure', ['bundle-unresolved', 'bundle-no-patch', 'bundle-patch-missing']
     .every(code => report.findings.some(finding => finding.code === code)))
 
+  // A warning the user can never act on trains them to ignore warnings: this
+  // package's own link directory is incomplete by design, while a deployment
+  // plane that fails to resolve its packages is a real problem.
+  const planeFinding = (origin) => report.findings.find(finding => finding.code === 'plane-unusable' && finding.title.endsWith(`(${origin})`))
+  equal('plane check: this package\'s own links are not a warning', planeFinding('package')?.level, 'info')
+  equal('plane check: an incomplete deployment plane is still a warning', planeFinding('profiles')?.level, 'warn')
+
   const dry = await repair.applyMechanicalFixes({ profile: 'web', dryRun: true })
   equal('fix(dry-run): finds all three unusable bundles', dry.applied.length, 3)
   const untouched = JSON.parse(readFileSync(join(profile, 'package.json'), 'utf8'))
@@ -269,6 +276,57 @@ check('verdict: a duplicate entry id counts', probe.showsBootFailure('duplicate 
 check('verdict: the verdict is narrower than the diagnostic extractor',
   doctor.extractBootSignals('TypeError: x is not a function').length > 0
   && !probe.showsBootFailure('TypeError: x is not a function'))
+
+// ── bare-name base ─────────────────────────────────────────────────────────
+// A plane of any name must work. Node's bare-name resolution always inserts
+// `node_modules` between the base and the specifier, so handing it a plane root
+// only worked while that root happened to be called `node_modules` — every
+// `--plane <other name>` then failed to resolve a single row. The base is the
+// runtime directory, and the module below resolves only through its link.
+const planeModule = await import(lib('plane.js'))
+const fakePlane = join(scratch, 'alt-plane')
+const fakePackage = join(fakePlane, '@deepseek-ai', 'plane-probe')
+mkdirSync(fakePackage, { recursive: true })
+writeFileSync(join(fakePackage, 'package.json'), JSON.stringify({
+  name: '@deepseek-ai/plane-probe', version: '0.0.0', type: 'module', exports: './index.js',
+}))
+writeFileSync(join(fakePackage, 'index.js'), 'export const reached = true\n')
+
+const runtimeRoot = join(scratch, 'base')
+const runtime = planeModule.prepareRuntime(runtimeRoot, fakePlane)
+check('base: the base is the directory containing node_modules',
+  dirname(runtime.rootDir) === runtimeRoot, runtime.rootDir)
+check('base: the base sits beside the include root',
+  dirname(runtime.rootConfig) === runtime.rootDir && existsSync(runtime.rootConfig))
+const link = join(runtime.rootDir, 'node_modules')
+check('base: the base links the plane', lstatSync(link).isSymbolicLink())
+check('base: the link points at the plane root',
+  resolve(dirname(link), readlinkSync(link)) === resolve(fakePlane))
+const bareEntry = join(runtime.rootDir, 'entry.mjs')
+writeFileSync(bareEntry, "export { reached } from '@deepseek-ai/plane-probe'\n")
+let reached = false
+try {
+  reached = (await import(pathToFileURL(bareEntry).href)).reached === true
+} catch (error) {
+  check('base: a bare row name resolves from the base', false, error instanceof Error ? error.message : String(error))
+}
+check('base: a plane named anything but node_modules still resolves', reached)
+
+// ── PATH detection ─────────────────────────────────────────────────────────
+// A launcher nobody can invoke is not a launcher, and a wrong answer here means
+// either a false "you are all set" or advice the user does not need.
+const onPath = join(scratch, 'bin')
+mkdirSync(onPath, { recursive: true })
+const separator = process.platform === 'win32' ? ';' : ':'
+check('path: a directory on the search path is found', planeModule.isOnSearchPath(onPath, `/nowhere${separator}${onPath}${separator}`))
+check('path: a quoted entry still matches', planeModule.isOnSearchPath(onPath, `"${onPath}"`))
+check('path: a trailing separator still matches', planeModule.isOnSearchPath(onPath, `${onPath}${process.platform === 'win32' ? '\\' : '/'}`))
+check('path: an absent directory is not found', !planeModule.isOnSearchPath(join(scratch, 'elsewhere'), onPath))
+check('path: an empty search path finds nothing', !planeModule.isOnSearchPath(onPath, ''))
+check('path: case is ignored on win32 only',
+  process.platform === 'win32'
+    ? planeModule.isOnSearchPath(onPath.toUpperCase(), onPath.toUpperCase())
+    : planeModule.isOnSearchPath(onPath, onPath))
 
 if (failures.length > 0) {
   console.error(`smoke-test: FAIL (${failures.length} of ${passed + failures.length})`)

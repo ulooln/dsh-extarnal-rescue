@@ -16,8 +16,9 @@ import { verifyMountedOverrides, checkRescueCompatibility } from './compat.ts'
 import { buildMission, RESCUE_PERSONA } from './mission.ts'
 import { renderJson, renderReport } from './report.ts'
 import {
-  dshHome, homePath, loadAppBoot, packageRootDir, planeBaseUrl, prepareRuntime, type AppBootContext,
+  dshHome, homePath, loadAppBoot, packageRootDir, prepareRuntime, type AppBootContext,
 } from './plane.ts'
+import { pathToFileURL } from 'node:url'
 import type { DoctorReport } from './types.ts'
 
 /** Permission presets the rescue can run under. */
@@ -158,6 +159,12 @@ async function bootOnPlane(
 
   let resolveExit: (code: number) => void = () => {}
   const finished = new Promise<number>((resolveFinished) => { resolveExit = resolveFinished })
+  // The base bare row names resolve from. Node's own resolution always inserts
+  // `node_modules`, so the base must be a directory that CONTAINS one: the
+  // runtime directory, whose `node_modules` links the plane. Passing the plane
+  // root itself only worked when the plane happened to be a directory named
+  // `node_modules`, which made `--plane <any other dir>` silently fail to boot.
+  const bareModuleBaseUrl = `${pathToFileURL(runtime.rootDir).href}/`
   let context: AppBootContext
   try {
     context = await appBoot.boot(
@@ -167,7 +174,7 @@ async function bootOnPlane(
       (hostCtx) => {
         hostCtx.provide('appExit', (code: number) => { resolveExit(code) })
       },
-      planeBaseUrl(planeRoot),
+      bareModuleBaseUrl,
     )
   } catch (error) {
     for (const [name, value] of Object.entries(environment)) {
