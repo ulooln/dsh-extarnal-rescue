@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * `dsh-rescue` 鈥?the entry point a person runs when the harness will not start.
+ * `dsh-rescue` —the entry point a person runs when the harness will not start.
  *
  * It imports nothing from the harness at module scope: every harness package is
  * loaded at runtime from a deployment plane this file finds first. That is the
- * whole point 鈥?a broken profile composition, a broken bundle, or a broken
+ * whole point —a broken profile composition, a broken bundle, or a broken
  * plugin cannot prevent this command from running.
  *
  * Commands:

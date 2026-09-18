@@ -91,6 +91,6 @@ vX.Y.Z · YYYY-MM-DD
 | --- | --- | --- |
 | 版本一致 | `npm run check:version` | 六处版本不一致；四段版本号；CHANGELOG 最新段不是当前版本 |
 | 体积 | `npm run check:size` | 整体积或单文件超限 |
-| 逻辑回归 | `node tools/smoke-test.mjs` | 崩溃分类、specifier→包名、命令行文法、boot 握手、bundle 判据与机械修复、裸名基址、PATH 判定、平面告警级别 |
+| 逻辑回归 | `node tools/smoke-test.mjs` | 崩溃分类、specifier→包名、命令行文法、boot 握手、bundle 判据与机械修复、裸名基址、PATH 判定、平面告警级别、启动器内容与提示节流 |
 
 `npm test` = 三道门禁依次执行。新增一条**能自动判定的约定**时，同时加一道门禁；只写进本文档而不检查的规则会腐烂。

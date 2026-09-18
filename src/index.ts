@@ -19,7 +19,8 @@ import z from '@deepseek-ai/schemastery'
 import { classifyCrash, readBootState, readIncident, runDoctor, worstLevel, writeBootState } from './doctor.ts'
 import { renderJson, renderReport } from './report.ts'
 import { defaultStateRoot } from './launcher.ts'
-import { isOnSearchPath, packageRootDir } from './plane.ts'
+import { packageRootDir } from './plane.ts'
+import { pathNoticeIsNews, writeShim } from './shim.ts'
 import { PACKAGE_VERSION } from './version.ts'
 
 /** Stable Cordis plugin name. */
@@ -55,35 +56,18 @@ function text(value: unknown): { type: 'text'; text: string }[] {
  * A launcher nobody can invoke is not a launcher. Its directory is usually not
  * on PATH, and the shell then reports the bare name as unknown, which reads
  * exactly like the tool does not exist — so the mount says so instead of leaving
- * the person to discover it while the harness is already broken.
+ * the person to discover it while the harness is already broken. It says so once
+ * per change of that state, because the mount runs on every boot.
  * @param stateRoot - the rescue state root.
- * @returns the written file paths, and the PATH advice when it is not reachable as a command.
  */
-function writeShim(stateRoot: string): { files: string[]; error?: string; pathAdvice?: string } {
-  try {
-    mkdirSync(stateRoot, { recursive: true })
-    const cli = join(packageRootDir(), 'lib', 'cli.js')
-    const cmd = join(stateRoot, 'dsh-rescue.cmd')
-    const sh = join(stateRoot, 'dsh-rescue.sh')
-    writeFileSync(cmd, `@echo off\r\n"${process.execPath}" "${cli}" %*\r\n`)
-    writeFileSync(sh, `#!/bin/sh\nexec "${process.execPath}" "${cli}" "$@"\n`)
-    if (isOnSearchPath(stateRoot)) return { files: [cmd, sh] }
-    const windows = process.platform === 'win32'
-    const add = windows
-      ? `[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';${stateRoot}', 'User')`
-      : `echo 'export PATH="$PATH:${stateRoot.replace(/\\/g, '/')}"' >> ~/.profile`
-    return {
-      files: [cmd, sh],
-      pathAdvice: [
-        `'dsh-rescue' is not a command yet: ${stateRoot} is not on PATH.`,
-        `  use it now:      "${cmd}" doctor`,
-        `  make it a command (then reopen the terminal): ${add}`,
-        '  note: that directory also holds rescue state (sessions, incidents); on PATH the whole directory becomes visible.',
-      ].join('\n'),
-    }
-  } catch (error) {
-    return { files: [], error: error instanceof Error ? error.message : String(error) }
+function installLauncher(stateRoot: string): void {
+  const shim = writeShim(stateRoot)
+  if (shim.error !== undefined) {
+    process.stderr.write(`dsh-rescue: warning: cannot write the launcher into ${stateRoot}: ${shim.error}\n`)
+    return
   }
+  if (shim.pathAdvice === undefined || !pathNoticeIsNews(stateRoot, shim.onPath)) return
+  process.stderr.write(`dsh-rescue: warning: ${shim.pathAdvice}\n`)
 }
 
 /** How long to wait before assuming a surface with no readiness signal came up. */
@@ -203,11 +187,7 @@ function safeText(path: string): string | undefined {
  */
 export function apply(ctx: Context, config: Config): void {
   const stateRoot = config.stateRoot ?? defaultStateRoot()
-  if (config.installShim) {
-    const shim = writeShim(stateRoot)
-    if (shim.error !== undefined) process.stderr.write(`dsh-rescue: warning: cannot write the launcher into ${stateRoot}: ${shim.error}\n`)
-    else if (shim.pathAdvice !== undefined) process.stderr.write(`dsh-rescue: warning: ${shim.pathAdvice}\n`)
-  }
+  if (config.installShim) installLauncher(stateRoot)
   installBootHandshake(ctx, stateRoot)
 
   ctx.effect(() => ctx.tools.register(defineTool({

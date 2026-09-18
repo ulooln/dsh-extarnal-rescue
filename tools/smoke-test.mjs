@@ -328,6 +328,33 @@ check('path: case is ignored on win32 only',
     ? planeModule.isOnSearchPath(onPath.toUpperCase(), onPath.toUpperCase())
     : planeModule.isOnSearchPath(onPath, onPath))
 
+// ── the launcher and its one-time notice ────────────────────────────────────
+// The mount runs on every boot, so advice printed every time becomes noise the
+// reader learns to skip. It is printed when the state changes, and the launcher
+// content is written by one function shared with `dsh-rescue shim`.
+const shimModule = await import(lib('shim.js'))
+const shimRoot = join(scratch, 'shim-root')
+const shim = shimModule.writeShim(shimRoot)
+check('shim: writes both launchers', shim.files.length === 2 && shim.files.every(file => existsSync(file)))
+check('shim: the launcher runs this CLI', readFileSync(join(shimRoot, 'dsh-rescue.cmd'), 'utf8').includes(join('lib', 'cli.js')))
+check('shim: the launcher uses this Node', readFileSync(join(shimRoot, 'dsh-rescue.cmd'), 'utf8').includes(process.execPath))
+check('shim: a directory off PATH comes with advice', typeof shim.pathAdvice === 'string' && shim.pathAdvice.includes(shimRoot))
+equal('shim: it reports the directory as off PATH', shim.onPath, false)
+equal('shim: the first notice is news', shimModule.pathNoticeIsNews(shimRoot, false), true)
+equal('shim: the same state is not news again', shimModule.pathNoticeIsNews(shimRoot, false), false)
+equal('shim: a change of state is news again', shimModule.pathNoticeIsNews(shimRoot, true), true)
+equal('shim: and then quiet again', shimModule.pathNoticeIsNews(shimRoot, true), false)
+
+const previousPath = process.env.PATH
+process.env.PATH = `${onPath}${separator}${previousPath ?? ''}`
+try {
+  const reachable = shimModule.writeShim(onPath)
+  check('shim: a directory on PATH needs no advice', reachable.pathAdvice === undefined && reachable.onPath)
+} finally {
+  if (previousPath === undefined) delete process.env.PATH
+  else process.env.PATH = previousPath
+}
+
 if (failures.length > 0) {
   console.error(`smoke-test: FAIL (${failures.length} of ${passed + failures.length})`)
   for (const failure of failures) console.error(`  - ${failure}`)

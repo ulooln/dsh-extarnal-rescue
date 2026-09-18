@@ -1,6 +1,6 @@
 # @dsh-external/dsh-rescue
 
-**版本 0.3.2** · 2026-09-10 · 许可 BSD-3-Clause · 状态：可用（Windows + DSH `0.1.3-alpha.1` 端到端实测通过）· 变更见 [CHANGELOG.md](CHANGELOG.md)
+**版本 0.3.3** · 2026-09-10 · 许可 BSD-3-Clause · 状态：可用（Windows + DSH `0.1.3-alpha.1` 端到端实测通过）· 变更见 [CHANGELOG.md](CHANGELOG.md)
 
 DSH 本体自毁救援：**当 dsh 起不来、Web UI 也进不去的时候**，用一条命令拉起一个独立的、具备「创造模式」工具面的极简 agent，让它诊断并修复本体。
 
@@ -57,7 +57,7 @@ node C:\Home\skyer\dsh-rescue\lib\cli.js doctor
 [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';' + "$env:USERPROFILE\.dsh\rescue", 'User')
 ```
 
-两点权衡：① 这个目录同时存放救援状态（会话、incident、transcript），放上 PATH 会让整个目录出现在命令补全里；② 不想动环境就固定用 A，两种方式完全等价。挂载时插件会自己检查这件事：目录不在 PATH 上就在 stderr 打一条提示（含上面那条一次性 PATH 命令），而不是等你真崩了才发现喊不出来。
+两点权衡：① 这个目录同时存放救援状态（会话、incident、transcript），放上 PATH 会让整个目录出现在命令补全里；② 不想动环境就固定用 A，两种方式完全等价。挂载时插件会自己检查这件事：目录不在 PATH 上就在 stderr 打一条提示（含上面那条一次性 PATH 命令），并且**只在状态变化时提示一次**（首次，或从在 PATH 变成不在 PATH），免得每次启动都重复同一段建议；`dsh-rescue shim` 是人工显式调用，仍然每次都说全。
 
 ```
 dsh-rescue doctor [--json]            纯静态诊断：不启动、不调模型

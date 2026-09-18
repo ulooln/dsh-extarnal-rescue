@@ -10,4 +10,4 @@
  */
 
 /** The version this build reports. Keep in step with `package.json`. */
-export const PACKAGE_VERSION = '0.3.2'
+export const PACKAGE_VERSION = '0.3.3'

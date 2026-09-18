@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * `dsh-rescue` 鈥?the entry point a person runs when the harness will not start.
+ * `dsh-rescue` —the entry point a person runs when the harness will not start.
  *
  * It imports nothing from the harness at module scope: every harness package is
  * loaded at runtime from a deployment plane this file finds first. That is the
- * whole point 鈥?a broken profile composition, a broken bundle, or a broken
+ * whole point —a broken profile composition, a broken bundle, or a broken
  * plugin cannot prevent this command from running.
  *
  * Commands:
@@ -16,7 +16,7 @@
  * @module @dsh-external/dsh-rescue/cli
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseArgs, USAGE, type Invocation } from './args.ts'
 import { runDoctor, worstLevel } from './doctor.ts'
@@ -25,6 +25,7 @@ import { dshHome, homePath, packageRootDir } from './plane.ts'
 import { captureBoot, writeIncident } from './probe.ts'
 import { applyMechanicalFixes } from './repair.ts'
 import { renderJson, renderReport } from './report.ts'
+import { writeShim } from './shim.ts'
 
 /** Resolve the plane a capture should run against, preferring a usable one. */
 async function resolveProbePlane(invocation: Invocation): Promise<string | undefined> {
@@ -38,24 +39,16 @@ async function resolveProbePlane(invocation: Invocation): Promise<string | undef
 
 /** Write the short launcher shims next to the harness home. */
 function installShim(stateRoot: string): number {
-  const cli = join(packageRootDir(), 'lib', 'cli.js')
-  mkdirSync(stateRoot, { recursive: true })
-  const cmd = [
-    '@echo off',
-    `rem dsh-rescue launcher 鈥?runs the standalone rescue CLI with this Node.`,
-    `"${process.execPath}" "${cli}" %*`,
-    '',
-  ].join('\r\n')
-  const sh = [
-    '#!/bin/sh',
-    '# dsh-rescue launcher 鈥?runs the standalone rescue CLI with this Node.',
-    `exec "${process.execPath}" "${cli}" "$@"`,
-    '',
-  ].join('\n')
-  writeFileSync(join(stateRoot, 'dsh-rescue.cmd'), cmd)
-  writeFileSync(join(stateRoot, 'dsh-rescue.sh'), sh)
-  process.stdout.write(`dsh-rescue: launcher written\n  ${join(stateRoot, 'dsh-rescue.cmd')}\n  ${join(stateRoot, 'dsh-rescue.sh')}\n`)
-  process.stdout.write(`dsh-rescue: add ${stateRoot} to PATH, or call the file directly, when the harness will not start.\n`)
+  const shim = writeShim(stateRoot)
+  if (shim.error !== undefined) {
+    process.stderr.write(`dsh-rescue: cannot write the launcher into ${stateRoot}: ${shim.error}\n`)
+    return 1
+  }
+  process.stdout.write('dsh-rescue: launcher written\n')
+  for (const file of shim.files) process.stdout.write(`  ${file}\n`)
+  process.stdout.write(shim.pathAdvice === undefined
+    ? `dsh-rescue: ${stateRoot} is on PATH; the bare command works.\n`
+    : `dsh-rescue: ${shim.pathAdvice}\n`)
   return 0
 }
 
